@@ -95,7 +95,6 @@ while [ $# -gt 0 ]; do
         --distribution|-d)
             shift
             DISTR=$1
-            shift
             ;;
         --upload-to-glance|-u)
             shift
@@ -107,14 +106,15 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-ks=$1
+ksfile=$1
 name=$2
 
-if [ -z "$name" -o -z "$ks" ]; then
+if [ -z "$name" -o -z "$ksfile" ]; then
     die 1 "Usage: $0 kickstart name"
 fi
+ks=$(basename $ksfile)
 
-if ! [ -f "$ks" ]; then
+if ! [ -f "$ksfile" ]; then
     die 2 "Kickstart file $ks not found"
 fi
 
@@ -127,6 +127,16 @@ case $DISTR in
     precise)
         OSVARIANT=ubuntuprecise
         OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/precise/main/installer-amd64/
+        OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
+        ;;
+    quantal)
+        OSVARIANT=ubuntuquantal
+        OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/quantal/main/installer-amd64/
+        OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
+        ;;
+    raring)
+        OSVARIANT=ubuntuquantal
+        OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/raring/main/installer-amd64/
         OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
         ;;
     *)
@@ -153,7 +163,7 @@ virt-install --name "$sanitized_name" \
     --ram 1024 --cpu host --vcpus 1 \
     --os-type=linux --nographics \
     --os-variant=$OSVARIANT --location=$OSLOCATION \
-    --initrd-inject=$ks --extra-args="$OSEXTRAARGS text console=tty0 utf8 console=ttyS0,115200" \
+    --initrd-inject=$ksfile --extra-args="$OSEXTRAARGS text console=tty0 utf8 console=ttyS0,115200" \
     --disk path=`pwd`/$imgfile,size=4,bus=virtio --force --noreboot \
     || die 9 "Virt-install failed1"
 
