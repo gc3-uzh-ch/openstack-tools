@@ -219,7 +219,7 @@ sudo virt-sparsify --convert qcow2  $imgfile $qcowfile \
 if [ $UPLOAD_TO_GLANCE -eq 1 ]
 then
     echo "Uploading to glance"
-    echo glance image-create --name "$name" --disk-format qcow2 --container-format bare --is-public $GLANCE_PUBLIC_IMAGE --file $qcowfile
+    glance image-create --name "$name" --disk-format qcow2 --container-format bare --is-public $GLANCE_PUBLIC_IMAGE --file $qcowfile
 fi
 
 echo
