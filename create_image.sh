@@ -97,7 +97,6 @@ while [ $# -gt 0 ]; do
             DISTR=$1
             ;;
         --upload-to-glance|-u)
-            shift
             UPLOAD_TO_GLANCE=1
             ;;
         --help|-h) usage; exit 0 ;;
