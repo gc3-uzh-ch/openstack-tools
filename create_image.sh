@@ -31,7 +31,21 @@ but it's not (yet).
 
 Options:
 
-  --help, -h  Print this help text.
+  --distribution, -d DISTRO  
+                Specify the distribution to use. Valid values are:
+                - centos6: CentOS 6
+                - precise: Ubuntu Precise Pangolin 12.04
+                - quantal: Ubuntu Quantal Quetzal 12.10
+                - raring:  Ubuntu Raring Ringtail 13.04
+                - wheezy:  Debian Wheezy 7.1
+  --upload-to-glance, -u
+                Upload the image to glance. You need to set the proper 
+                environment variables in order to make it work.
+  --upload-public-image, -p
+                Upload as public image. Implies `-u'
+  --gui, -x     Install using the graphical interface instead of using the 
+                terminal as a console
+  --help, -h    Print this help text.
 
 EOF
 }
@@ -43,6 +57,16 @@ die () {
   shift
   (echo -n "$PROG: ERROR: ";
       if [ $# -gt 0 ]; then echo "$@"; else cat; fi) 1>&2
+  exit $rc
+}
+
+invalid_usage () {
+  rc="$1"
+  shift
+  (echo -n "$PROG: ERROR: ";
+      if [ $# -gt 0 ]; then echo "$@"; else cat; fi) 1>&2
+  echo
+  usage
   exit $rc
 }
 
@@ -68,8 +92,8 @@ is_absolute_path () {
 
 ## parse command-line 
 
-short_opts='hd:u'
-long_opts='help,distribution:,upload-to-glance'
+short_opts='hd:uxp'
+long_opts='help,distribution:,upload-to-glance,upload-public-image,gui'
 
 if [ "x$(getopt -T)" != 'x--' ]; then
     # GNU getopt
@@ -90,6 +114,9 @@ fi
 
 DISTR=centos6
 UPLOAD_TO_GLANCE=0
+GLANCE_PUBLIC_IMAGE=false
+GRAPHICS=--nographics
+CONSOLE="text console=tty0 utf8 console=ttyS0,115200"
 while [ $# -gt 0 ]; do
     case "$1" in
         --distribution|-d)
@@ -98,6 +125,13 @@ while [ $# -gt 0 ]; do
             ;;
         --upload-to-glance|-u)
             UPLOAD_TO_GLANCE=1
+            ;;
+        --upload-public-image|-p)
+            GLANCE_PUBLIC_IMAGE=true
+            ;;
+        --gui|-x)
+            GRAPHICS="--graphics vnc"
+            CONSOLE="text console=tty0 utf8"
             ;;
         --help|-h) usage; exit 0 ;;
         --) shift; break ;;
@@ -108,9 +142,11 @@ done
 ksfile=$1
 name=$2
 
-if [ -z "$name" -o -z "$ksfile" ]; then
-    die 1 "Usage: $0 kickstart name"
-fi
+[ -z "$ksfile" ] && invalid_usage 1 "Missing 'kickstart' file"
+[ -z "$name" ] && invalid_usage 1 "Missing 'name' argument"
+[ -n "$3" ] && invalid_usage 1 "Invalid option '$3'"
+
+
 ks=$(basename $ksfile)
 
 if ! [ -f "$ksfile" ]; then
@@ -138,6 +174,11 @@ case $DISTR in
         OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/raring/main/installer-amd64/
         OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
         ;;
+    wheezy)
+        OSVARIANT=debianwheezy
+        OSLOCATION=http://ftp.ch.debian.org/debian/dists/stable/main/installer-amd64/
+        OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=debian netcfg/get_domain=localdomain"
+        ;;
     *)
         die 2 "Distribution not supported."
         ;;
@@ -155,16 +196,17 @@ imgfile=$sanitized_name.img
 qcowfile=$sanitized_name.qcow2
 
     # --nographics --os-type=linux \
-
 echo "Running virt-install"
 virt-install --name "$sanitized_name" \
     --connect=qemu:///session \
     --ram 1024 --cpu host --vcpus 1 \
-    --os-type=linux --nographics \
+    --os-type=linux $GRAPHICS \
     --os-variant=$OSVARIANT --location=$OSLOCATION \
-    --initrd-inject=$ksfile --extra-args="$OSEXTRAARGS text console=tty0 utf8 console=ttyS0,115200" \
+    --initrd-inject=$ksfile --extra-args="$OSEXTRAARGS $CONSOLE" \
     --disk path=`pwd`/$imgfile,size=4,bus=virtio --force --noreboot \
     || die 9 "Virt-install failed1"
+
+virsh --connect qemu:///session undefine "$sanitized_name"
 
 echo "Preparing image for cloud"
 sudo virt-sysprep --no-selinux-relabel -a $imgfile \
@@ -177,7 +219,7 @@ sudo virt-sparsify --convert qcow2  $imgfile $qcowfile \
 if [ $UPLOAD_TO_GLANCE -eq 1 ]
 then
     echo "Uploading to glance"
-    echo glance image-create --name "$name" --disk-format qcow2 --container-format bare --is-public false --file $qcowfile
+    echo glance image-create --name "$name" --disk-format qcow2 --container-format bare --is-public $GLANCE_PUBLIC_IMAGE --file $qcowfile
 fi
 
 echo
