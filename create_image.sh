@@ -42,7 +42,7 @@ Options:
                 Upload the image to glance. You need to set the proper 
                 environment variables in order to make it work.
   --upload-public-image, -p
-                Upload as public image. Implies `-u'
+                Upload as public image. Implies '-u'
   --gui, -x     Install using the graphical interface instead of using the 
                 terminal as a console
   --help, -h    Print this help text.
