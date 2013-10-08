@@ -125,6 +125,7 @@ while [ $# -gt 0 ]; do
             ;;
         --upload-to-glance|-u)
             UPLOAD_TO_GLANCE=1
+            require_command glance
             ;;
         --upload-public-image|-p)
             GLANCE_PUBLIC_IMAGE=true
@@ -184,10 +185,9 @@ case $DISTR in
         ;;
 esac
 
-require_command virt-install virt-install
+require_command virt-install
 require_command virt-sysprep
 require_command virt-sparsify
-require_command glance
 
 sudo virt-install --version >/dev/null  || die 3 "sudo command might not work. Check that you can run commands as root using sudo."
 
