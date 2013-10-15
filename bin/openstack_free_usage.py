@@ -41,21 +41,33 @@ log = logging.getLogger("nova")
 FLAGS = flags.FLAGS
 args = flags.parse_args(['openstack_free_usage'])
 
-def count_free_slots_by_flavor(ctxt, nodes, flavor):
+def count_free_slots_by_flavor(ctxt, nodes, flavor, verbose=0):
     count = 0
     max_count = 0
     for node in nodes:
+        vms_by_cpus = (node.vcpus - node.vcpus_used) / flavor['vcpus']
+        vms_by_mem = node.free_ram_mb / flavor['memory_mb']
+        vms_by_disk = (node.local_gb - node.local_gb_used) / (
+            flavor['root_gb'] + flavor['ephemeral_gb'])
         n_vms = min(
-            (node.vcpus - node.vcpus_used) / flavor['vcpus'],
-            node.free_ram_mb / flavor['memory_mb'],
-            (node.local_gb - node.local_gb_used) / (
-                flavor['root_gb'] + flavor['ephemeral_gb']))
+            vms_by_cpus,
+            vms_by_mem,
+            vms_by_disk)
 
+
+        max_vms_by_cpus = (node.vcpus) / flavor['vcpus']
+        max_vms_by_mem = node.memory_mb / flavor['memory_mb']
+        max_vms_by_disk = (node.local_gb) / (
+                flavor['root_gb'] + flavor['ephemeral_gb'])
         n_maxvms = min(
-            (node.vcpus) / flavor['vcpus'],
-            node.memory_mb / flavor['memory_mb'],
-            (node.local_gb) / (
-                flavor['root_gb'] + flavor['ephemeral_gb']))
+            max_vms_by_cpus,
+            max_vms_by_mem,
+            max_vms_by_disk)
+
+        if verbose > 3:
+            print "DEBUG: node %s cpu: %d/%d, mem: %d/%d, disk: %d/%d" % (
+                node.hypervisor_hostname, vms_by_cpus, max_vms_by_cpus,
+                vms_by_mem, max_vms_by_mem, vms_by_disk, max_vms_by_disk)
 
         if n_vms > 0:
             count += n_vms
@@ -66,9 +78,12 @@ def count_free_slots_by_flavor(ctxt, nodes, flavor):
         #     node.vcpus - node.vcpus_used, node.free_ram_mb, n_vms)
     return (count, max_count)
 
-def main(verbose, filter_flavors=[]):
+def main(verbose, filter_flavors=[], simulate_flavor=None):
     ctxt = context.get_admin_context()
     flavors = instance_types.get_all_types(ctxt).values()
+    if simulate_flavor:
+        flavors.append(simulate_flavor)
+
     # compute_nodes = db.compute_node_get_all(ctxt)
     # compute_nodes.sort(key=lambda x: x.hypervisor_hostname)
     compute_nodes = []
@@ -77,7 +92,7 @@ def main(verbose, filter_flavors=[]):
             compute_nodes.extend(s.compute_node)
 
     compute_nodes.sort(cmp=lambda x,y: cmp(x.hypervisor_hostname, y.hypervisor_hostname))
-            
+
     if verbose > 0:
         print "%d compute nodes" % len(compute_nodes)
         print "  vcpus total: %d" % sum(i.vcpus for i in compute_nodes)
@@ -117,7 +132,7 @@ def main(verbose, filter_flavors=[]):
             print "  root disk: %d gb" % flavor['root_gb']
             print "  ephemeral disk: %d gb" % flavor['ephemeral_gb']
             print "Max nr. of VMs: %d (total capacity: %d)" % count_free_slots_by_flavor(
-                ctxt, compute_nodes, flavor)
+                ctxt, compute_nodes, flavor, verbose)
             print
 
     flavor_len = max(len(f['name']) for f in flavors)
@@ -129,5 +144,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', '--verbose', help="Increase verbosity.", action="count", default=0)
     parser.add_argument('-f', '--flavor', help="Select flavor.", nargs="*", default=[])
+    parser.add_argument('--simulate', help='Simulate, using data from a fake flavor', action='store_true')
+    parser.add_argument('-n', '--flavor-name', help='Name of the simulated flavor', default='simulated-flavor')
+    parser.add_argument('-c', '--vcpus', help='Nr. of vCPUS. Used with --simulate', type=int, default=1)
+    parser.add_argument('-m', '--ram', help='RAM in MB. Used with --simulate', type=int, default=1000)
+    parser.add_argument('-r', '--root-disk', help='Size in GB of the root disk. Used with --simulate', type=int, default=10)
+    parser.add_argument('-e', '--ephemeral-disk', help='Size in GB of the ephemeral disk. Used with --simulate', type=int, default=0)
+
     args = parser.parse_args()
-    main(args.verbose, args.flavor)
+    flavor = {}
+    if args.simulate:
+        flavor['name'] = args.flavor_name
+        flavor['vcpus'] = args.vcpus
+        flavor['memory_mb'] = args.ram
+        flavor['root_gb'] = args.root_disk
+        flavor['ephemeral_gb'] = args.ephemeral_disk
+    main(args.verbose, args.flavor, flavor)
