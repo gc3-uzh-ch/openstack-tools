@@ -43,18 +43,28 @@ args = flags.parse_args(['openstack_free_usage'])
 
 def count_free_slots_by_flavor(ctxt, nodes, flavor):
     count = 0
+    max_count = 0
     for node in nodes:
         n_vms = min(
             (node.vcpus - node.vcpus_used) / flavor['vcpus'],
             node.free_ram_mb / flavor['memory_mb'],
             (node.local_gb - node.local_gb_used) / (
                 flavor['root_gb'] + flavor['ephemeral_gb']))
+
+        n_maxvms = min(
+            (node.vcpus) / flavor['vcpus'],
+            node.memory_mb / flavor['memory_mb'],
+            (node.local_gb) / (
+                flavor['root_gb'] + flavor['ephemeral_gb']))
+
         if n_vms > 0:
             count += n_vms
+        if n_maxvms > 0:
+            max_count += n_maxvms
         # print "Node %s, flavor %s, free cpus %d, free ram %s, count: %d" % (
         #     node.hypervisor_hostname, flavor['name'],
         #     node.vcpus - node.vcpus_used, node.free_ram_mb, n_vms)
-    return count
+    return (count, max_count)
 
 def main(verbose, filter_flavors=[]):
     ctxt = context.get_admin_context()
@@ -66,6 +76,8 @@ def main(verbose, filter_flavors=[]):
         if not s.disabled:
             compute_nodes.extend(s.compute_node)
 
+    compute_nodes.sort(cmp=lambda x,y: cmp(x.hypervisor_hostname, y.hypervisor_hostname))
+            
     if verbose > 0:
         print "%d compute nodes" % len(compute_nodes)
         print "  vcpus total: %d" % sum(i.vcpus for i in compute_nodes)
@@ -81,6 +93,11 @@ def main(verbose, filter_flavors=[]):
             print "WARNING: node %s, disk total/used/free: %d/%d/%d" % (
                 node.hypervisor_hostname, node.local_gb, node.local_gb_used,
                 (node.local_gb - node.local_gb_used))
+        if verbose > 2:
+            print "DEBUG: node %s: free cpus: %d/%d free mem: %d/%d, free disk: %d/%d" % (
+                node.hypervisor_hostname, node.vcpus - node.vcpus_used, node.vcpus,
+                node.free_ram_mb, node.memory_mb, node.local_gb - node.local_gb_used, node.local_gb
+                )
 
     if filter_flavors:
         flavors = [f for f in flavors if f['name'] in filter_flavors]
@@ -93,21 +110,20 @@ def main(verbose, filter_flavors=[]):
     flavors.sort(cmp=cmp_flavor)
 
     if verbose > 1:
-        print flavors
         for flavor in flavors:
             print "Flavor '%s'" % flavor['name']
             print "  vcpus:  %d" % flavor['vcpus']
             print "  memory: %d mb" % flavor['memory_mb']
             print "  root disk: %d gb" % flavor['root_gb']
             print "  ephemeral disk: %d gb" % flavor['ephemeral_gb']
-            print "Max nr. of VMs: %d" % count_free_slots_by_flavor(
+            print "Max nr. of VMs: %d (total capacity: %d)" % count_free_slots_by_flavor(
                 ctxt, compute_nodes, flavor)
             print
-    else:
-        flavor_len = max(len(f['name']) for f in flavors)
-        for flavor in flavors:
-            print flavor['name'].ljust(flavor_len), ": %4d" % count_free_slots_by_flavor(
-                ctxt, compute_nodes, flavor)
+
+    flavor_len = max(len(f['name']) for f in flavors)
+    for flavor in flavors:
+        print flavor['name'].ljust(flavor_len), ": %4d/%4d" % count_free_slots_by_flavor(
+            ctxt, compute_nodes, flavor)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
