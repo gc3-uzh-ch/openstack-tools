@@ -1,5 +1,18 @@
 #!/usr/bin/env python
 
+# Note: we assume that keystone is running on the same machine as
+# nova!
+try:
+    from keystone import config
+    from keystone.openstack.common import importutils
+    CONF = config.CONF
+    CONF(default_config_files=['/etc/keystone/keystone.conf'], project='keystone')
+    identity = importutils.import_object(CONF.identity.driver)
+    USE_KEYSTONE=True
+except:
+    USE_KEYSTONE=False
+    identity = None
+
 import sqlalchemy as sqla
 import sqlalchemy.sql as sql
 from ConfigParser import SafeConfigParser
@@ -53,12 +66,16 @@ for project in usages_by_project:
                     t_quotas.c.project_id]).where(
                         sqla.and_(t_quotas.c.deleted==0,
                                   t_quotas.c.project_id==project.project_id))
+    try:
+        project_name = identity.get_tenant(project.project_id)['name']
+    except:
+        project_name = project.project_id
     for quota in db.execute(q):
         if quota.resource == "instances":
             if project.n_instances != quota.in_use:
                 log.append("Instances count mismatch on project %s:"
                            " reported usage: %d, actual usage: %d" % (
-                               project.project_id, quota.in_use, project.n_instances))
+                               project_name, quota.in_use, project.n_instances))
                 if UPDATE_USAGES:
                     log.append(
                         "  updating `%s` table: set `in_use` to %s where id==%s" % (
@@ -67,7 +84,7 @@ for project in usages_by_project:
 
         if quota.resource == "cores":
             if quota.in_use != project.vcpus:
-                log.append("CPU count mismatch on project %s: reported usage: %d, actual usage: %d" % (project.project_id, quota.in_use, project.vcpus))
+                log.append("CPU count mismatch on project %s: reported usage: %d, actual usage: %d" % (project_name, quota.in_use, project.vcpus))
                 if UPDATE_USAGES:
                     log.append(
                         "  updating `%s` table: set `in_use` to %s where id==%s" % (
@@ -76,7 +93,7 @@ for project in usages_by_project:
 
         if quota.resource == "ram":
             if quota.in_use != project.ram:
-                log.append("RAM count mismatch on project %s: reported usage: %d, actual usage: %d" % (project.project_id, quota.in_use, project.ram))
+                log.append("RAM count mismatch on project %s: reported usage: %d, actual usage: %d" % (project_name, quota.in_use, project.ram))
                 if UPDATE_USAGES:
                     log.append(
                         "  updating `%s` table: set `in_use` to %s where id==%s" % (
