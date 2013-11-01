@@ -57,11 +57,11 @@ FLAGS = flags.FLAGS
 args = flags.parse_args(['openstack_free_usage'])
 
 def debug(*args):
-    if verbose > 2:
+    if verbose > 1:
         print(*args)
 
 def info(*args):
-    if verbose > 1:
+    if verbose > 0:
         print(*args)
 
 class RunVirsh(mp.Process):
