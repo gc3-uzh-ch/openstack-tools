@@ -7,6 +7,37 @@ an OpenStack installation.
 Please note that these tools have been tested only on Ubuntu 12.04,
 OpenStack Folsom!
 
+``create_image.sh``
+-------------------
+
+This tool is used to create and possibly upload to a glance instance a
+virtual cloud-ready virtual disk. The tool allow you to create virtual
+machines for one of the following distributions:
+
+* CentOS 6
+* Ubuntu Precise Pangolin 12.04
+* Ubuntu Quantal Quetzal 12.10
+* Ubuntu Raring Ringtail 13.04
+* Debian Wheezy 7.1
+
+In order to do this, it uses ``virt-install`` command and a kickstart
+or a preseed, depending if you are installing a CentOS or a
+Debian/Ubuntu system. Predefined kickstart and preseeds are stored in
+the ``etc/`` directory, but you can customize them or supply your own
+file.
+
+The following packages are required:
+
+* virtinst (``virt-install`` command)
+* libguestfs-tools (``virt-sysprep`` and ``virt-sparsify`` commands)
+* python-glanceclient (``glance`` command, required only to upload the
+  image to OpenStack)
+
+
+Tools present in ``bin`` directory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
 ``openstack_accounting_usage.py``
 ---------------------------------
 
@@ -103,13 +134,3 @@ order to be able to access the database.
 Check that quotas in OpenStack reflect the actual usage of the
 cloud. This is done by checking the quota information stored on
 the database against the list of running VMs.
-
-Requirements - Ubuntu/Debian
-----------------------------
-
-The following packages are required:
-
-* virtinst (``virt-install`` command)
-* libguestfs-tools (``virt-sysprep`` and ``virt-sparsify`` commands)
-* python-glanceclient (``glance`` command, required only to upload the
-  image to OpenStack)
