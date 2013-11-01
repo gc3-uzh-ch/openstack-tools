@@ -74,6 +74,8 @@ def main(args):
         instances_by_user[user] = vms
 
     keys = instances_by_user.keys()
+    if args.user:
+        keys = filter(lambda x: x in args.user, keys)
     cmp_by = cmp_by_name
 
     if args.sort == 'vms':
@@ -105,6 +107,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('-u', '--user', help="Only select instances for these users.", nargs='*')
     parser.add_argument('-s', '--sort', help="Sort order. One of: name, cpus, vms", default='name')
     parser.add_argument('-r', '--reverse', help="Reverse order", action="store_true")
     args = parser.parse_args()
