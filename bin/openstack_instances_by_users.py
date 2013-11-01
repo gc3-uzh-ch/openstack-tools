@@ -25,6 +25,7 @@ __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 
 import argparse
 import sys
+from collections import defaultdict
 
 # Note: we assume that keystone is running on the same machine as
 # nova!
@@ -59,10 +60,8 @@ def main(args):
     ctxt = context.get_admin_context()
     instances = db.instance_get_all(ctxt)
 
-    instances_by_uid = {}
+    instances_by_uid = defaultdict(list)
     for vm in instances:
-        if vm.user_id not in instances_by_uid:
-            instances_by_uid[vm.user_id] = []
         instances_by_uid[vm.user_id].append(vm)
 
     instances_by_user = {}
