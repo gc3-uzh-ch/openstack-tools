@@ -33,10 +33,13 @@ Options:
 
   --distribution, -d DISTRO  
                 Specify the distribution to use. Valid values are:
+                - centos5: CentOS 5
                 - centos6: CentOS 6
-                - precise: Ubuntu Precise Pangolin 12.04
+                - precise: Ubuntu Precise Pangolin 12.04 LTS
                 - quantal: Ubuntu Quantal Quetzal 12.10
                 - raring:  Ubuntu Raring Ringtail 13.04
+                - saucy:   Ubuntu Saucy Salamander 13.10
+                - trusty:  Ubuntu Trusty Tahr 14.04 LTS
                 - wheezy:  Debian Wheezy 7.1
   --upload-to-glance, -u
                 Upload the image to glance. You need to set the proper 
@@ -155,6 +158,11 @@ if ! [ -f "$ksfile" ]; then
 fi
 
 case $DISTR in 
+    centos5)
+        OSVARIANT=rhel5
+        OSLOCATION=http://mirror.centos.org/centos/5/os/x86_64
+        OSEXTRAARGS="ks=file:///$ks"
+        ;;
     centos6)
         OSVARIANT=rhel6
         OSLOCATION=http://mirrors.kernel.org/centos/6/os/x86_64
@@ -171,8 +179,18 @@ case $DISTR in
         OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
         ;;
     raring)
-        OSVARIANT=ubuntuquantal
+        OSVARIANT=ubunturaring
         OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/raring/main/installer-amd64/
+        OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
+        ;;
+    saucy)
+        OSVARIANT=ubuntusaucy
+        OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/saucy/main/installer-amd64/
+        OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
+        ;;
+    trusty)
+        OSVARIANT=ubuntutrusty
+        OSLOCATION=http://archive.ubuntu.com/ubuntu/dists/trusty/main/installer-amd64/
         OSEXTRAARGS="auto=true url=file:///$ks DEBCONF_DEBUG=5 netcfg/get_hostname=ubuntu"
         ;;
     wheezy)
@@ -197,14 +215,26 @@ qcowfile=$sanitized_name.qcow2
 
     # --nographics --os-type=linux \
 echo "Running virt-install"
-virt-install --name "$sanitized_name" \
+out=$(virt-install --name "$sanitized_name" \
     --connect=qemu:///session \
     --ram 1024 --cpu host --vcpus 1 \
     --os-type=linux $GRAPHICS \
     --os-variant=$OSVARIANT --location=$OSLOCATION \
     --initrd-inject=$ksfile --extra-args="$OSEXTRAARGS $CONSOLE" \
-    --disk path=`pwd`/$imgfile,size=4,bus=virtio --force --noreboot \
-    || die 9 "Virt-install failed1"
+    --disk path=`pwd`/$imgfile,size=4,bus=virtio --force --noreboot 2>&1)
+
+rc=$?
+if [ $rc -ne 0 ]
+then
+    if echo "${out}" | grep "Guest name '$sanitized_name' is already in use"
+    then
+        echo "WARNING: Guest name in use."
+        echo "Try running:"
+        echo "   virsh -c qemu:///session destroy $sanitized_name"
+        echo "   virsh -c qemu:///session undefine $sanitized_name"
+    fi
+    die $rc "Virt-install failed!"
+fi
 
 virsh --connect qemu:///session undefine "$sanitized_name"
 
@@ -227,3 +257,19 @@ echo "Creation of image done."
 echo "Raw image:   $imgfile"
 echo "QCOW2 image: $qcowfile"
 
+# # Info on how to mount the qcow2 image:
+# # also check http://alexeytorkhov.blogspot.ch/2009/09/mounting-raw-and-qcow2-vm-disk-images.html
+# modprobe nbd max_part=32
+# qemu-nbd -c /dev/nbd0 $qcowfile
+# # assuming you want to mount partition 1:
+# mount /dev/nbd0p1 /mnt
+
+
+# # If you are using LVM instead:
+# vgscan
+# vgchange -ay
+# mount /dev/VolGroupName/LogVolName /mnt
+
+# # To unmount:
+# umount /mnt
+# qemu-nbd -c /dev/nbd0
