@@ -94,7 +94,13 @@ for project in usages_by_project:
     except:
         project_name = project.project_id
     for quota in db.execute(q):
-        if quota.resource == "instances":
+        if quota.resource == "fixed_ips":
+            pass
+        elif quota.resource == "floating_ips":
+            import pdb; pdb.set_trace()
+        elif quota.resource == "security_groups":
+            pass
+        elif quota.resource == "instances":
             if project.n_instances != quota.in_use:
                 log.append("Instances count mismatch on project %s:"
                            " reported usage: %d, actual usage: %d" % (
@@ -105,7 +111,7 @@ for project in usages_by_project:
                             t_quotas.name, project.n_instances, quota.id))
                     db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.n_instances}))
 
-        if quota.resource == "cores":
+        elif quota.resource == "cores":
             if quota.in_use != project.vcpus:
                 log.append("CPU count mismatch on project %s: reported usage: %d, actual usage: %d" % (project_name, quota.in_use, project.vcpus))
                 if UPDATE_USAGES:
@@ -114,7 +120,7 @@ for project in usages_by_project:
                             t_quotas.name, project.vcpus, quota.id))
                     db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.vcpus}))
 
-        if quota.resource == "ram":
+        elif quota.resource == "ram":
             if quota.in_use != project.ram:
                 log.append("RAM count mismatch on project %s: reported usage: %d, actual usage: %d" % (project_name, quota.in_use, project.ram))
                 if UPDATE_USAGES:

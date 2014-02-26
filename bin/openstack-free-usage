@@ -54,7 +54,7 @@ def count_free_slots_by_flavor(ctxt, nodes, flavor, verbose=0):
             vms_by_cpus,
             vms_by_mem,
             vms_by_disk)
-
+        if n_vms < 0: n_vms = 0
 
         max_vms_by_cpus = (node.vcpus) / flavor['vcpus']
         max_vms_by_mem = node.memory_mb / flavor['memory_mb']
@@ -65,9 +65,9 @@ def count_free_slots_by_flavor(ctxt, nodes, flavor, verbose=0):
             max_vms_by_mem,
             max_vms_by_disk)
 
-        if verbose > 3:
-            print "DEBUG: node %s cpu: %d/%d, mem: %d/%d, disk: %d/%d" % (
-                node.hypervisor_hostname, vms_by_cpus, max_vms_by_cpus,
+        if verbose > 2:
+            print "DEBUG: node %s Can run %d more VMs of this type (max: %d). cpu: %g/%d, mem: %d/%d, disk: %d/%d" % (
+                node.hypervisor_hostname, n_vms, n_maxvms, vms_by_cpus, max_vms_by_cpus,
                 vms_by_mem, max_vms_by_mem, vms_by_disk, max_vms_by_disk)
 
         if n_vms > 0:
