@@ -188,8 +188,11 @@ def get_results(sql_string, ip, start_date, end_date):
 
     and_statement = sql.and_(t_info.c.network_info.like('%%"%s"%%' % ip))
     if start_date:
-        and_statement = sql.and_(and_statement,
-                                 t_info.c.deleted_at >= start_date)
+        and_statement = sql.and_(
+            and_statement,
+            sql.or_(t_info.c.deleted_at >= start_date,
+                    t_info.c.deleted_at == sql.null())
+        )
     if end_date:
         and_statement = sql.and_(and_statement,
                                  t_info.c.created_at <= end_date)
