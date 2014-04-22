@@ -186,7 +186,10 @@ def get_results(sql_string, ip, start_date, end_date):
     t_vms = metadata.tables['instances']
     t_info = metadata.tables['instance_info_caches']
 
-    and_statement = sql.and_(t_info.c.network_info.like('%%"%s"%%' % ip))
+    and_statement = sql.and_(
+        sql.not_(t_info.c.network_info.like('%%dhcp_server": "%s"%%' % ip)),
+        sql.not_(t_info.c.network_info.like('%%gateway": "%s"%%' % ip)),
+        t_info.c.network_info.like('%%"address": "%s"%%' % ip))
     if start_date:
         and_statement = sql.and_(
             and_statement,
