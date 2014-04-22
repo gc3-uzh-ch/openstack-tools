@@ -200,10 +200,10 @@ def get_results(sql_string, ip, start_date, end_date):
         and_statement = sql.and_(and_statement,
                                  t_info.c.created_at <= end_date)
 
-    q = sql.select(
-        [t_vms, t_info], use_labels=True,
-        from_obj=[t_vms.join(t_info)]).where(and_statement).order_by(
-            sqla.asc(t_vms.c.created_at))
+    q = sql.select([t_vms, t_info], use_labels=True,
+                   from_obj=[t_vms.join(t_info)])\
+           .where(and_statement)\
+           .order_by(sqla.asc(t_vms.c.created_at))
 
     return db.execute(q)
 
