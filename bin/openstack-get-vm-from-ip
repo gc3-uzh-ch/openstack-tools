@@ -85,7 +85,7 @@ class EnvDefault(argparse.Action):
     # This class is used to get default values for --os-* options from environment variables.
     # Courtesy of Russell Heilling from Stack Overflow:
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
-    def __init__(self, envvar, required=True, default=None, **kwargs):
+    def __init__(self, envvar, required=False, default=None, **kwargs):
         if not default and envvar:
             if envvar in os.environ:
                 default = os.environ[envvar]
