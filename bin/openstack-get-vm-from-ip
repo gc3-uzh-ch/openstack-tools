@@ -1,0 +1,276 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 mode: python -*-#
+# @(#)openstack-get-vm-from-ip
+#
+#
+# Copyright (C) 2013, GC3, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""Given an IP address, this command will print all the instances the
+IP address was assigned to.
+
+Optionally you can specify a start and end date, to select only the
+instances that were running within that time range.
+
+If you provide valid OpenStack credentials (either with `--os-*` options
+or setting the corresponding `OS_*` environment variables) and supply
+the `-k` option, project and user IDs are converted into project and
+user names.
+
+Please note that this command only work with fixed IPs or
+automatically assigned floating IPs, it does not work with "proper"
+floating IPs.
+
+"""
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import collections
+from datetime import datetime
+import functools
+import json
+import os
+import sys
+
+import sqlalchemy as sqla
+import sqlalchemy.sql as sql
+from ConfigParser import SafeConfigParser
+
+try:
+    from keystoneclient.v2_0 import client as kclient
+except:
+    kclient = None
+
+# Default location for nova configuration file.
+nova_cfg_file='/etc/nova/nova.conf'
+
+# Date formats that we understand.
+valid_date_format = ['%d/%m/%Y', '%d/%m/%Y %H:%M',
+                '%d/%m/%Y %H:%M:%S',
+                '%Y-%m-%d', '%Y-%m-%d %H:%M',
+                '%Y-%m-%d %H:%M:%S',
+                "%Y%m%d%H%M",
+                "%Y%m%d%H%M%S",]
+
+def mkdate(string):
+    """Try to convert a string into a proper datetime object and returns a
+    string that can be used in a SQL query.
+    """
+    for fmt in valid_date_format:
+        try:
+            date = datetime.strptime(string, fmt)
+            return date.strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            pass
+    raise argparse.ArgumentError(
+        "Invalid argument '%s' for time format. Accepted formats are: %s", 
+        string, str.join(',', valid_date_format))
+
+
+class EnvDefault(argparse.Action):
+    # This class is used to get default values for --os-* options from environment variables.
+    # Courtesy of Russell Heilling from Stack Overflow:
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required, 
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+
+class memoize(object):
+    '''Decorator. Caches a function's return value each time it is called.
+    If called later with the same arguments, the cached value is returned
+    (not reevaluated).
+    '''
+    # Courtesy of Python wiki:
+    # https://wiki.python.org/moin/PythonDecoratorLibrary#Memoize
+    def __init__(self, func):
+        self.func = func
+        self.cache = {}
+    def __call__(self, *args):
+        if not isinstance(args, collections.Hashable):
+            # uncacheable. a list, for instance.
+            # better to not cache than blow up.
+            return self.func(*args)
+        if args in self.cache:
+            return self.cache[args]
+        else:
+            value = self.func(*args)
+            self.cache[args] = value
+            return value
+    def __repr__(self):
+        '''Return the function's docstring.'''
+        return self.func.__doc__
+    def __get__(self, obj, objtype):
+        '''Support instance methods.'''
+        return functools.partial(self.__call__, obj)
+
+
+def dummy_translator(data):
+    return data
+
+
+def configure_user_translator(opts):
+    """Returns the correct function to translate an user_id into a
+    username
+    """
+
+    if opts.use_keystone:
+        if not kclient:
+            raise RuntimeError("Module `keystone` not found")
+
+        client = kclient.Client(username=opts.os_username,
+                                password=opts.os_password,
+                                tenant_name=opts.os_tenant_name,
+                                auth_url=opts.os_auth_url)
+        @memoize
+        def keystone_user_translator(user_id):
+            user = client.users.get(user_id)            
+            return user.name
+        return keystone_user_translator
+
+    else:
+        return dummy_translator
+
+
+def configure_project_translator(opts):
+    """Returns the correct function to translate a project_id into a
+    project name
+    """
+
+    if opts.use_keystone:
+        if kclient is None:
+            raise RuntimeError("Module `keystone` not fonud")
+
+        client = kclient.Client(username=opts.os_username,
+                                password=opts.os_password,
+                                tenant_name=opts.os_tenant_name,
+                                auth_url=opts.os_auth_url)
+        @memoize
+        def keystone_project_translator(user_id):
+            project = client.tenants.get(user_id)            
+            return project.name
+        return keystone_project_translator
+
+    else:
+        return dummy_translator
+
+
+def get_results(sql_string, ip, start_date, end_date):
+    db = sqla.create_engine(sql_string, echo=False)
+
+    metadata = sqla.MetaData(bind=db)
+    metadata.reflect()
+
+    t_vms = metadata.tables['instances']
+    t_info = metadata.tables['instance_info_caches']
+
+    and_statement = sql.and_(t_info.c.network_info.like('%%"%s"%%' % ip))
+    if start_date:
+        and_statement = sql.and_(and_statement,
+                                 t_info.c.deleted_at >= start_date)
+    if end_date:
+        and_statement = sql.and_(and_statement,
+                                 t_info.c.created_at <= end_date)
+
+    q = sql.select(
+        [t_vms, t_info], use_labels=True,
+        from_obj=[t_vms.join(t_info)]).where(and_statement).order_by(
+            sqla.asc(t_vms.c.created_at))
+
+    return db.execute(q)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--sql-string',
+                        help='String to be used to connect to the database. If '
+                        'not specified, the nova configuration file will be inspected.')
+    parser.add_argument('--nova-config-file', default=nova_cfg_file,
+                        help='Nova configuration file. Default: %(default)s')
+    parser.add_argument('-k', '--use-keystone', action="store_true",
+                        help='Use keystone API to translate owner id into name/project.')
+    parser.add_argument('--os-username', action=EnvDefault, envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, '
+                        'the value of the "OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password', action=EnvDefault, envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, '
+                        'the value of the "OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-tenant-name', action=EnvDefault, envvar="OS_TENANT_NAME",
+                        help='OpenStack administrator tenant name. If not supplied, '
+                        'the value of the "OS_TENANT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url', action=EnvDefault, envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, '
+                        'the value of the "OS_AUTH_URL" environment variable is used.')
+
+    parser.add_argument('ip', nargs=1, help='IP Address.')
+    parser.add_argument(metavar='start-date', dest='start_date', nargs='?', type=mkdate,
+                        help='Select instances terminated after `start-date`. Valid formats '
+                        'for start-date: %s' % str.join(', ', valid_date_format).replace('%','%%'))
+    parser.add_argument(metavar='end-date', dest='end_date', nargs='?', type=mkdate, 
+                        help='Select instances created before `end-date`. Valid formats '
+                        'for end-date: %s' % str.join(', ', valid_date_format).replace('%','%%'))
+    args = parser.parse_args()
+
+    translate_owner = configure_user_translator(args)
+    translate_project = configure_project_translator(args)
+    if not args.sql_string:
+        cfg = SafeConfigParser()
+        if not os.path.isfile(args.nova_config_file):
+            sys.stderr.write(
+                "ERROR: Nova configuration file %s does not exist or it's "
+                "not a file.\n\n" % args.nova_config_file)
+            parser.print_help()
+            sys.exit(1)
+        cfg.read(args.nova_config_file)
+
+        if not cfg.has_option('DEFAULT', 'sql_connection'):
+            sys.stderr.write(
+                "ERROR: Invalid nova configuration file %s: missing option "
+                "'DEFAULT/sql_connection'.\n\n" % args.nova_config_file)
+            parser.print_help()
+            sys.exit(1)
+
+        cfg = SafeConfigParser()
+        cfg.read(args.nova_config_file)
+
+        args.sql_string = cfg.get('DEFAULT', 'sql_connection')
+
+    for row in get_results(args.sql_string, args.ip[0], args.start_date, args.end_date):
+        info = json.loads(row.instance_info_caches_network_info)[0]
+        print "Instance ID: %s" % row['instances_uuid']
+        print "Instance name: %s" % row['instances_hostname']
+        print "User: %s" % translate_owner(row.instances_user_id)
+        print "Project: %s" % translate_project(row.instances_project_id)
+        print "Created: %s" % row['instances_created_at']
+        print "Deleted: %s" % row['instances_deleted_at']
+        print "IP Created: %s" % row['instance_info_caches_created_at']
+        print "IP Deleted: %s" % row['instance_info_caches_deleted_at']
+        for subnet in info['network']['subnets']:
+            for ip in subnet['ips']:
+                print "Address: %s" % ip['address']
+                for floating in ip.get('floating_ips', []):
+                    print "Floating ip: %s" % floating['address']
+        print
