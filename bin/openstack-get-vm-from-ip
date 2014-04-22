@@ -240,8 +240,19 @@ if __name__ == "__main__":
                         'for end-date: %s' % str.join(', ', valid_date_format).replace('%','%%'))
     args = parser.parse_args()
 
+
+    # if -k is given, check that openstack options are defined
+    if args.use_keystone:
+        for opt in ['os_username', 'os_password', 'os_tenant_name', 'os_auth_url']:
+            if not getattr(args, opt):
+                sys.stderr.write("ERROR: -k option given but no %s option supplied.\n\n" % opt)
+                parser.print_help()
+                sys.exit(1)
+
     translate_owner = configure_user_translator(args)
     translate_project = configure_project_translator(args)
+
+    # Check sql connection information
     if not args.sql_string:
         cfg = SafeConfigParser()
         if not os.path.isfile(args.nova_config_file):
