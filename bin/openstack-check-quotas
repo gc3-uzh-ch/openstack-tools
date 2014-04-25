@@ -1,0 +1,318 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 mode: python -*-#
+# @(#)openstack-update-quotas
+#
+#
+# Copyright (C) 2013, GC3, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import collections
+import os
+import sys
+
+import sqlalchemy as sqla
+import sqlalchemy.sql as sql
+from ConfigParser import SafeConfigParser
+
+try:
+    from keystoneclient.v2_0 import client as kclient
+except:
+    kclient = None
+
+
+
+
+# Default location for nova configuration file.
+nova_cfg_file = '/etc/nova/nova.conf'
+# default location for cinder configuration file
+cinder_cfg_file = '/etc/cinder/cinder.conf'
+
+
+class EnvDefault(argparse.Action):
+    # This class is used to get default values for --os-* options from environment variables.
+    # Courtesy of Russell Heilling from Stack Overflow:
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=False, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required, 
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+class memoize(object):
+    '''Decorator. Caches a function's return value each time it is called.
+    If called later with the same arguments, the cached value is returned
+    (not reevaluated).
+    '''
+    # Courtesy of Python wiki:
+    # https://wiki.python.org/moin/PythonDecoratorLibrary#Memoize
+    def __init__(self, func):
+        self.func = func
+        self.cache = {}
+    def __call__(self, *args):
+        if not isinstance(args, collections.Hashable):
+            # uncacheable. a list, for instance.
+            # better to not cache than blow up.
+            return self.func(*args)
+        if args in self.cache:
+            return self.cache[args]
+        else:
+            value = self.func(*args)
+            self.cache[args] = value
+            return value
+    def __repr__(self):
+        '''Return the function's docstring.'''
+        return self.func.__doc__
+    def __get__(self, obj, objtype):
+        '''Support instance methods.'''
+        return functools.partial(self.__call__, obj)
+
+def dummy_translator(data):
+    return data
+
+def configure_project_translator(opts):
+    """Returns the correct function to translate a project_id into a
+    project name
+    """
+
+    if opts.use_keystone:
+        if kclient is None:
+            raise RuntimeError("Module `keystone` not fonud")
+
+        client = kclient.Client(username=opts.os_username,
+                                password=opts.os_password,
+                                tenant_name=opts.os_tenant_name,
+                                auth_url=opts.os_auth_url)
+        @memoize
+        def keystone_project_translator(user_id):
+            project = client.tenants.get(user_id)            
+            return project.name
+        return keystone_project_translator
+
+    else:
+        return dummy_translator
+
+def check_nova_quotas(sql_string, ptranslator, log=[], update=False):
+    db = sqla.create_engine(sql_string, echo=False)
+
+    metadata = sqla.MetaData(bind=db)
+    metadata.reflect()
+
+    t_vms = metadata.tables['instances']
+    t_quotas = metadata.tables['quota_usages']
+
+    q = sql.select([
+        t_vms.c.project_id,
+        sqla.func.sum(t_vms.c.vcpus).label('vcpus'),
+        sqla.func.sum(t_vms.c.memory_mb).label('ram'),
+        sqla.func.count(t_vms.c.id).label('n_instances'),
+        sqla.func.sum(t_vms.c.root_gb)]).where(t_vms.c.deleted==0).group_by('project_id')
+
+    usages_by_project = db.execute(q)
+
+    for project in usages_by_project:
+        q = sql.select([t_quotas.c.id,
+                        t_quotas.c.in_use,
+                        t_quotas.c.resource,
+                        t_quotas.c.project_id]).where(
+                            sqla.and_(t_quotas.c.deleted==0,
+                                      t_quotas.c.project_id==project.project_id))
+        project_name = ptranslator(project.project_id)
+        for quota in db.execute(q):
+            if quota.resource == "instances":
+                if project.n_instances != quota.in_use:
+                    log.append("Instances count mismatch on project %s:"
+                               " reported usage: %d, actual usage: %d" % (
+                                   project_name, quota.in_use, project.n_instances))
+                    if update:
+                        log.append(
+                            "  updating `%s` table: set `in_use` to %s where id==%s" % (
+                                t_quotas.name, project.n_instances, quota.id))
+                        db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.n_instances}))
+
+            elif quota.resource == "cores":
+                if quota.in_use != project.vcpus:
+                    log.append("CPU count mismatch on project %s: reported usage: %d, actual usage: %d" % (project_name, quota.in_use, project.vcpus))
+                    if update:
+                        log.append(
+                            "  updating `%s` table: set `in_use` to %s where id==%s" % (
+                                t_quotas.name, project.vcpus, quota.id))
+                        db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.vcpus}))
+
+            elif quota.resource == "ram":
+                if quota.in_use != project.ram:
+                    log.append("RAM count mismatch on project %s: reported usage: %d, actual usage: %d" % (project_name, quota.in_use, project.ram))
+                    if update:
+                        log.append(
+                            "  updating `%s` table: set `in_use` to %s where id==%s" % (
+                                t_quotas.name, project.ram, quota.id))
+                        db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.ram}))
+            else:
+                log.append("Skipping resource `%s` which is not (yet) supported." % quota.resource)
+
+
+def check_cinder_quotas(sql_string, ptranslator, log=[], update=False):
+    db = sqla.create_engine(sql_string, echo=False)
+
+    metadata = sqla.MetaData(bind=db)
+    metadata.reflect()
+
+    t_vols = metadata.tables['volumes']
+    t_quotas = metadata.tables['quota_usages']
+
+    q = sql.select([
+        t_vols.c.project_id,
+        sql.func.sum(t_vols.c.size).label('gigabytes'),
+        sqla.func.count(t_vols.c.id).label('n_volumes')]).where(t_vols.c.deleted==0).group_by('project_id')
+
+    usages_by_project = db.execute(q)
+
+    for project in usages_by_project:
+        q = sql.select([t_quotas.c.id,
+                        t_quotas.c.in_use,
+                        t_quotas.c.resource,
+                        t_quotas.c.project_id]).where(
+                            sqla.and_(t_quotas.c.deleted==0,
+                                      t_quotas.c.project_id==project.project_id))
+        project_name = ptranslator(project.project_id)
+        for quota in db.execute(q):
+            if quota.resource == 'volumes':
+                if project.n_volumes != quota.in_use:
+                    log.append("Volumes count mismatch on project %s:"
+                               " reported usage: %d, actual usage: %d" % (
+                                   project_name, quota.in_use, project.n_volumes))
+                    if update:
+                        log.append(
+                            "  updating `%s` table: set `in_use` to %s where id==%s" % (
+                                t_quotas.name, project.n_volumes, quota.id))
+                        db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.n_volumes}))
+            elif quota.resource == 'gigabytes':
+                if project.gigabytes != quota.in_use:
+                    log.append("Gigabytes count mismatch on project %s:"
+                               " reported usage: %d, actual usage: %d" % (
+                                   project_name, quota.in_use, project.gigabytes))
+                    if update:
+                        log.append(
+                            "  updating `%s` table: set `in_use` to %s where id==%s" % (
+                                t_quotas.name, project.gigabytes, quota.id))
+                        db.execute(t_quotas.update().where(t_quotas.c.id==quota.id).values({'in_use':project.gigabytes}))
+            else:
+                log.append("Skipping resource `%s` which is not (yet) supported." % quota.resource)
+
+        
+
+def read_option_from_config(cfgfile, section, option):
+    """Read configuration file cfgfile, and returns configuration option
+    section/option if found, None if none is found."""
+    cfg = SafeConfigParser()
+    if not os.path.isfile(cfgfile):
+        return None
+    cfg.read(cfgfile)
+
+    if not cfg.has_option(section, option):
+        return None
+
+    cfg = SafeConfigParser()
+    cfg.read(cfgfile)
+
+    return cfg.get(section, option)
+
+
+def main(args):
+    # if -k is given, check that openstack options are defined
+    if args.use_keystone:
+        for opt in ['os_username', 'os_password', 'os_tenant_name', 'os_auth_url']:
+            if not getattr(args, opt):
+                sys.stderr.write("ERROR: -k option given but no %s option supplied.\n\n" % opt)
+                parser.print_help()
+                sys.exit(1)
+    project_id_translator = configure_project_translator(args)
+
+    if not args.nova_sql_string:
+        args.nova_sql_string = read_option_from_config(args.nova_config_file, 'DEFAULT', 'sql_connection')
+        if args.nova_sql_string is None:
+            sys.stderr.write(
+                "ERROR: Nova configuration file %s does not exist or it's "
+                "not a file or it does not contain option DEFAULT/sql_connection.\n\n" % cfgfile)
+            parser.print_help()
+            sys.exit(1)
+    
+    if not args.cinder_sql_string:
+        args.cinder_sql_string = read_option_from_config(args.cinder_config_file, 'DEFAULT', 'sql_connection')
+        if args.cinder_sql_string is None:
+            sys.stderr.write(
+                "ERROR: Cinder configuration file %s does not exist or it's "
+                "not a file or it does not contain option DEFAULT/sql_connection.\n\n" % cfgfile)
+            parser.print_help()
+            sys.exit(1)
+
+    nova_log, cinder_log = [], []
+    check_nova_quotas(args.nova_sql_string, project_id_translator, nova_log, args.update_usages)
+    check_cinder_quotas(args.cinder_sql_string, project_id_translator, cinder_log, args.update_usages)
+
+    print("===============")
+    print("Logs from Nova:")
+    print("===============\n")
+    print(str.join("\n", nova_log))
+    print("\n")
+    print("=================")
+    print("Logs from Cinder:")
+    print("=================\n")
+    print(str.join("\n", cinder_log))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--update-usages', help='Update quota usage. Default: %(default)s',
+                        default=False, action='store_true')
+    parser.add_argument('--nova-sql-string',
+                        help='String to be used to connect to the Nova database. If '
+                        'not specified, the nova configuration file will be inspected.')
+    parser.add_argument('--cinder-sql-string',
+                        help='String to be used to connect to the Cinder database. If '
+                        'not specified, the nova configuration file will be inspected.')
+    parser.add_argument('--nova-config-file', default=nova_cfg_file,
+                        help='Nova configuration file. Default: %(default)s')
+    parser.add_argument('--cinder-config-file', default=cinder_cfg_file,
+                        help='Cinder configuration file. Default: %(default)s')
+    parser.add_argument('-k', '--use-keystone', action="store_true",
+                        help='Use keystone API to translate owner id into name/project.')
+    parser.add_argument('--os-username', action=EnvDefault, envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, '
+                        'the value of the "OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password', action=EnvDefault, envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, '
+                        'the value of the "OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-tenant-name', action=EnvDefault, envvar="OS_TENANT_NAME",
+                        help='OpenStack administrator tenant name. If not supplied, '
+                        'the value of the "OS_TENANT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url', action=EnvDefault, envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, '
+                        'the value of the "OS_AUTH_URL" environment variable is used.')
+
+    args = parser.parse_args()
+
+    main(args)
