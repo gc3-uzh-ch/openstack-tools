@@ -161,6 +161,8 @@ def main(verbose, filter_flavors=[], simulate_flavor=None):
             print "  memory: %d mb" % flavor['memory_mb']
             print "  root disk: %d gb" % flavor['root_gb']
             print "  ephemeral disk: %d gb" % flavor['ephemeral_gb']
+            if flavor.get('extra_specs'):
+                print "  extra specs: %s" % flavor['extra_specs']
             print "Max nr. of VMs: %d (total capacity: %d)" % free_slots
             print
 
@@ -170,6 +172,15 @@ def main(verbose, filter_flavors=[], simulate_flavor=None):
             ctxt, compute_nodes, flavor)
 
 if __name__ == "__main__":
+    def convert_string_to_dictionary(string):
+        """Convert a string in the form k=v[,k1=v1,...] in a dictionary {k:v, k1:v1}
+        """
+        returndict = {}
+        for opt in string.split(','):
+            k, v = opt.split('=',1)
+            returndict[k.strip()] = v.strip()
+        return returndict
+
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', '--verbose', help="Increase verbosity.", action="count", default=0)
     parser.add_argument('-f', '--flavor', help="Select flavor.", nargs="*", default=[])
@@ -179,15 +190,15 @@ if __name__ == "__main__":
     parser.add_argument('-m', '--ram', help='RAM in MB. Used with --simulate', type=int, default=1000)
     parser.add_argument('-r', '--root-disk', help='Size in GB of the root disk. Used with --simulate', type=int, default=10)
     parser.add_argument('-e', '--ephemeral-disk', help='Size in GB of the ephemeral disk. Used with --simulate', type=int, default=0)
+    parser.add_argument('--extra-specs', help='Extra specifications for simulated flavor. Used with --simulate',  default={}, type=convert_string_to_dictionary)
 
     args = parser.parse_args()
     verbose = args.verbose
-    flavor = {}
 
-    if args.simulate:
-        flavor['name'] = args.flavor_name
-        flavor['vcpus'] = args.vcpus
-        flavor['memory_mb'] = args.ram
-        flavor['root_gb'] = args.root_disk
-        flavor['ephemeral_gb'] = args.ephemeral_disk
+    flavor = { 'name' : args.flavor_name,
+               'vcpus' : args.vcpus,
+               'memory_mb' : args.ram,
+               'root_gb' : args.root_disk,
+               'ephemeral_gb' : args.ephemeral_disk,
+               'extra_specs' : args.extra_specs} if args.simulate else {}
     main(args.verbose, args.flavor, flavor)
