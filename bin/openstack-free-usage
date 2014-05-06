@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-#
-# @(#)openstack_free_usage.py
+# @(#)openstack-free-usage
 #
 #
 # Copyright (C) 2013, GC3, University of Zurich. All rights reserved.
@@ -35,16 +35,44 @@ from nova import context
 from nova.compute import instance_types
 from nova.openstack.common import cfg
 from nova.openstack.common import log as logging
-
-logging.setup("nova")
-log = logging.getLogger("nova")
+from nova.scheduler.filters import extra_specs_ops
 
 FLAGS = flags.FLAGS
 args = flags.parse_args(['openstack_free_usage'])
+verbose = 0
 
-def count_free_slots_by_flavor(ctxt, nodes, flavor, verbose=0):
+def host_matches_flavor_extraspecs(ctxt, flavor, host):
+    metadata = db.aggregate_metadata_get_by_host(ctxt, host.host)
+    for key, req in flavor['extra_specs'].iteritems():
+        # NOTE(jogo) any key containing a scope (scope is terminated
+        # by a `:') will be ignored by this filter. (bug 1039386)
+        if key.count(':'):
+            continue
+        aggregate_vals = metadata.get(key, None)
+        if not aggregate_vals:
+            if verbose > 2:
+                print("DEBUG: node %s fails instance_type extra_specs "
+                          "requirements for flavor %s" % (host.host, flavor['name']))
+            return False
+        for aggregate_val in aggregate_vals:
+            if extra_specs_ops.match(aggregate_val, req):
+                break
+        else:
+            if verbose > 2:
+                print("DEBUG: node %s fails instance_type extra_specs "
+                      "requirements for flavor %s" % (host.host, flavor['name']))
+            return False
+    return True
+
+
+def count_free_slots_by_flavor(ctxt, nodes, flavor):
     count = 0
     max_count = 0
+
+    # Filter nodes based on extra specs
+    if flavor.get('extra_specs', False):
+        nodes = [i for i in nodes if host_matches_flavor_extraspecs(ctxt, flavor, i.service)]
+
     for node in nodes:
         vms_by_cpus = (node.vcpus - node.vcpus_used) / flavor['vcpus']
         vms_by_mem = node.free_ram_mb / flavor['memory_mb']
@@ -66,7 +94,7 @@ def count_free_slots_by_flavor(ctxt, nodes, flavor, verbose=0):
             max_vms_by_disk)
 
         if verbose > 2:
-            print "DEBUG: node %s Can run %d more VMs of this type (max: %d). cpu: %g/%d, mem: %d/%d, disk: %d/%d" % (
+            print "DEBUG: node %s Can run %d more VMs of this type (max: %d). VMs free/max by cpu:: %g/%d, VMs free/max by mem: %d/%d, VMs free/max by disk: %d/%d" % (
                 node.hypervisor_hostname, n_vms, n_maxvms, vms_by_cpus, max_vms_by_cpus,
                 vms_by_mem, max_vms_by_mem, vms_by_disk, max_vms_by_disk)
 
@@ -110,7 +138,7 @@ def main(verbose, filter_flavors=[], simulate_flavor=None):
                 node.hypervisor_hostname, node.local_gb, node.local_gb_used,
                 (node.local_gb - node.local_gb_used))
         if verbose > 2:
-            print "DEBUG: node %s: free cpus: %d/%d free mem: %d/%d, free disk: %d/%d" % (
+            print "DEBUG: node %s: free/total cpus: %d/%d free/total mem: %d/%d, free/total disk: %d/%d" % (
                 node.hypervisor_hostname, node.vcpus - node.vcpus_used, node.vcpus,
                 node.free_ram_mb, node.memory_mb, node.local_gb - node.local_gb_used, node.local_gb
                 )
@@ -128,12 +156,12 @@ def main(verbose, filter_flavors=[], simulate_flavor=None):
     if verbose > 1:
         for flavor in flavors:
             print "Flavor '%s'" % flavor['name']
+            free_slots = count_free_slots_by_flavor(ctxt, compute_nodes, flavor)
             print "  vcpus:  %d" % flavor['vcpus']
             print "  memory: %d mb" % flavor['memory_mb']
             print "  root disk: %d gb" % flavor['root_gb']
             print "  ephemeral disk: %d gb" % flavor['ephemeral_gb']
-            print "Max nr. of VMs: %d (total capacity: %d)" % count_free_slots_by_flavor(
-                ctxt, compute_nodes, flavor, verbose)
+            print "Max nr. of VMs: %d (total capacity: %d)" % free_slots
             print
 
     flavor_len = max(len(f['name']) for f in flavors)
@@ -153,7 +181,9 @@ if __name__ == "__main__":
     parser.add_argument('-e', '--ephemeral-disk', help='Size in GB of the ephemeral disk. Used with --simulate', type=int, default=0)
 
     args = parser.parse_args()
+    verbose = args.verbose
     flavor = {}
+
     if args.simulate:
         flavor['name'] = args.flavor_name
         flavor['vcpus'] = args.vcpus
