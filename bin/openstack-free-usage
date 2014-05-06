@@ -153,10 +153,13 @@ def main(verbose, filter_flavors=[], simulate_flavor=None):
     # flavors.sort(key=lambda x: x['vcpus'])
     flavors.sort(cmp=cmp_flavor)
 
+    flavor_len = max(len(f['name']) for f in flavors)
+
+    flavor_results = dict((flavor['name'], count_free_slots_by_flavor(ctxt, compute_nodes, flavor)) for flavor in flavors)
     if verbose > 1:
         for flavor in flavors:
+            free_slots = flavor_results[flavor['name']]
             print "Flavor '%s'" % flavor['name']
-            free_slots = count_free_slots_by_flavor(ctxt, compute_nodes, flavor)
             print "  vcpus:  %d" % flavor['vcpus']
             print "  memory: %d mb" % flavor['memory_mb']
             print "  root disk: %d gb" % flavor['root_gb']
@@ -166,10 +169,9 @@ def main(verbose, filter_flavors=[], simulate_flavor=None):
             print "Max nr. of VMs: %d (total capacity: %d)" % free_slots
             print
 
-    flavor_len = max(len(f['name']) for f in flavors)
+    # summary line
     for flavor in flavors:
-        print flavor['name'].ljust(flavor_len), ": %4d/%4d" % count_free_slots_by_flavor(
-            ctxt, compute_nodes, flavor)
+        print flavor['name'].ljust(flavor_len), ": %4d/%4d" % flavor_results[flavor['name']]
 
 if __name__ == "__main__":
     def convert_string_to_dictionary(string):
