@@ -243,7 +243,7 @@ sudo virt-sysprep --no-selinux-relabel -a $imgfile \
     || die 9 "Virt-sysprep failed1"
 
 echo "Sparsify disk file and converting to qcow2"
-sudo virt-sparsify --convert qcow2  $imgfile $qcowfile \
+sudo virt-sparsify --convert qcow2 -o compat=0.10 $imgfile $qcowfile \
     || die 9 "Virt-sparsify failed1"
 
 if [ $UPLOAD_TO_GLANCE -eq 1 ]
