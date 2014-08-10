@@ -181,25 +181,28 @@ if __name__ == "__main__":
                     session.exec_command(args.command)
                     stdout = ""
                     stderr = ""
-                    while True:
-                        if session.recv_ready():
-                            stdout += (session.recv(1024))
-                        if session.recv_stderr_ready():
-                            stderr += (session.recv_stderr(1024))
-                        if session.exit_status_ready():
-                            break
+                    while not session.recv_ready():
+                        time.sleep(1)
+                    while session.recv_ready():
+                        stdout += (session.recv(1024))
+
+                    while session.recv_stderr_ready():
+                        stderr += (session.recv_stderr(1024))
                     rc = session.recv_exit_status()
                     if rc:
                         failed_images.append((image, "Exit status %d != 0" % rc, rc))
 
                     print("----- stdout BEGIN ----")
                     sys.stdout.write(stdout)
+                    sys.stdout.flush()
                     print("----- stdout END ----")
 
                     print("----- stderr BEGIN ----")
                     sys.stdout.write(stderr)
+                    sys.stdout.flush()
                     print("----- stderr END ----")
                     print("Exit status: %d" % rc)
+                    session.close()
                     ssh.close()
                     break
                 except Exception as ex:
