@@ -16,7 +16,7 @@ url --url=http://mirrors.kernel.org/centos/6/os/x86_64
 repo --name=base --baseurl=http://mirrors.kernel.org/centos/6/os/x86_64
 repo --name=updates --baseurl=http://mirrors.kernel.org/centos/6/updates/x86_64
 repo --name=epel --baseurl=http://mirrors.kernel.org/fedora-epel/6/x86_64
-repo --name=cloud-init --baseurl=http://repos.fedorapeople.org/repos/openstack/cloud-init/epel-6/
+# repo --name=cloud-init --baseurl=http://repos.fedorapeople.org/repos/openstack/cloud-init/epel-6/
 
 # Common configuration
 rootpw --iscrypted $1$fakehash-bruteforcetocrackitnow
@@ -144,9 +144,10 @@ rm -f 05-grow-root.sh
 
 tail -4 /boot/grub/grub.conf | sed s/initramfs/initramfs-grow_root/g| sed s/CentOS/ResizePartition/g | sed s/crashkernel=auto/crashkernel=0@0/g >> /boot/grub/grub.conf
 
-# let's run the kernel & initramfs that expands the partition only once
-echo "savedefault --default=1 --once" | grub --batch
-
+# In case you want to run the kernel & initramfs that expands the partition only once
+# echo "savedefault --default=1 --once" | grub --batch
+# Otherwise:
+sed -i s/^default=.*/default=1/g /boot/grub/grub.conf
 
 # Leave behind a build stamp
 echo "build=$(date +%F.%T)" >/etc/.build
