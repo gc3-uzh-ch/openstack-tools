@@ -66,6 +66,7 @@ class IgnorePolicy(paramiko.MissingHostKeyPolicy):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--key-name', required=1, help='Keypair name.')
     parser.add_argument('--os-username', action=EnvDefault, envvar="OS_USERNAME",
                         help='OpenStack administrator username. If not supplied, the value of the '
                         '"OS_USERNAME" environment variable is used.')
@@ -80,7 +81,7 @@ if __name__ == "__main__":
                         '"OS_AUTH_URL" environment variable is used.')
 
     parser.add_argument('--flavor', default='m1.tiny', help='Flavor.')
-    parser.add_argument('--key-name', required=1, help='Keypair name.')
+    parser.add_argument('--public-images', action="store_true", default=False, help='Only use public images. Ignored if --images is used')
     parser.add_argument('-u', '--ssh-username', default='root', help='Username to use to connect to the VM')
     parser.add_argument('-v', '--verbose', action="count")
 
@@ -97,12 +98,17 @@ if __name__ == "__main__":
     glance_url = keystone.service_catalog.url_for(service_type='image')
     auth_token = keystone.auth_token
     glance = glance_client.Client('1', endpoint=glance_url, token=auth_token)
-    public_images = []
+    images = []
     if not args.images:
-        public_images = list(glance.images.list())
+        if args.public_images:
+            images = [img for img in glance.images.list() if img.is_public]
+        else:
+            images = list(glance.images.list())
     else:
-        public_images = [img for img in glance.images.list() if img.name in args.images or img.id in args.images]
+        images = [img for img in glance.images.list() if img.name in args.images or img.id in args.images]
 
+    # Sort by image name
+    images.sort(key=lambda x: x.name)
     nova = nova_client.Client('1.1', args.os_username,
                               args.os_password,
                               args.os_tenant_name,
@@ -125,19 +131,22 @@ if __name__ == "__main__":
 
 
     failed_images = []
-    for image in public_images:
+    for image in images:
         imgsize = float(image.size) / 2**30
         if imgsize > flavor.disk:
-            print("Image %s cannot be started with flavor %s!" % (image.name, flavor.name))
+            print("Image '%s' cannot be started with flavor '%s'!" % (image.name, flavor.name))
             print("Image size: %.3fGB, flavor root disk: %d" % (imgsize, flavor.disk))
             failed_images.append((image, 'disk too small', -1))
             continue
-
-        vm = nova.servers.create('Running "%s" on "%s"' % (args.command, image.name),
-                                 image.id,
-                                 flavor,
-                                 key_name=args.key_name)
-        print("VM %s started using image %s" % (vm.id, image.name))
+        try:
+            vm = nova.servers.create('Running "%s" on "%s"' % (args.command, image.name),
+                                     image.id,
+                                     flavor,
+                                     key_name=args.key_name)
+        except Exception as ex:
+            print("Error starting vm with image %s (%s): %s" % (image.name, image.id, ex))
+            continue
+        print("VM %s started using image %s (%s)" % (vm.id, image.name, image.id))
         while vm.status == 'BUILD':
             vm = nova.servers.get(vm)
             time.sleep(WAIT)
@@ -146,7 +155,8 @@ if __name__ == "__main__":
             failed_images.append((image, "VM didn't start", -1))
             vm.delete()
             continue
-        print("VM in status ACTIVE")
+        if args.verbose:
+            print("VM in status ACTIVE")
 
         # Assuming it's fine
         ssh = paramiko.SSHClient()
@@ -173,7 +183,7 @@ if __name__ == "__main__":
                 except paramiko.SSHException as ex:
                     if args.verbose:
                         print("Ignoring error %s" % ex)
-            if ssh.get_transport().is_active():
+            if ssh.get_transport() and ssh.get_transport().is_active():
                 if args.verbose:
                     print("Connection open")
                 try:
@@ -182,8 +192,10 @@ if __name__ == "__main__":
                     stdout = ""
                     stderr = ""
                     while not session.recv_ready():
+                        if args.verbose: print("waiting for input")
                         time.sleep(1)
                     while session.recv_ready():
+                        if args.verbose: print("reading 1024 bytes from stdout")
                         stdout += (session.recv(1024))
 
                     while session.recv_stderr_ready():
@@ -192,15 +204,16 @@ if __name__ == "__main__":
                     if rc:
                         failed_images.append((image, "Exit status %d != 0" % rc, rc))
 
-                    print("----- stdout BEGIN ----")
-                    sys.stdout.write(stdout)
-                    sys.stdout.flush()
-                    print("----- stdout END ----")
-
-                    print("----- stderr BEGIN ----")
-                    sys.stdout.write(stderr)
-                    sys.stdout.flush()
-                    print("----- stderr END ----")
+                    if stdout:
+                        print("----- stdout BEGIN ----")
+                        sys.stdout.write(stdout)
+                        sys.stdout.flush()
+                        print("----- stdout END ----")
+                    if stderr:
+                        print("----- stderr BEGIN ----")
+                        sys.stdout.write(stderr)
+                        sys.stdout.flush()
+                        print("----- stderr END ----")
                     print("Exit status: %d" % rc)
                     session.close()
                     ssh.close()
