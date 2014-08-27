@@ -27,22 +27,196 @@ Created to test if all the instances have a specific command.
 __docformat__ = 'reStructuredText'
 __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 
-from glanceclient import client as glance_client
-from keystoneclient import client as keystone_client
-from novaclient import client as nova_client
 import argparse
-import novaclient.exceptions as nova_ex
+import logging
+import multiprocessing as mp
 import operator
 import os
 import paramiko
+import Queue
 import socket
 import sys
 import time
 
+import novaclient.exceptions as nova_ex
+from glanceclient import client as glance_client
+from keystoneclient import client as keystone_client
+from novaclient import client as nova_client
 
 DEFAULT_COMMAND="which fsfreeze"
-WAIT=2
+WAIT=5
 TIMEOUT=5
+
+### Logging configuration
+class MinLevelFilter(logging.Filter):
+    def __init__(self, level):
+        self.minlevel = level
+
+    def filter(self, record):
+        return (record.levelno >= self.minlevel)
+
+class MaxLevelFilter(logging.Filter):
+    def __init__(self, level):
+        self.maxlevel = level
+
+    def filter(self, record):
+        return (record.levelno <= self.maxlevel)
+
+#h1 = logging.StreamHandler(sys.stdout)
+h1 = logging.StreamHandler(sys.stderr)
+h2 = logging.StreamHandler(sys.stderr)
+f1 = MaxLevelFilter(logging.INFO)
+f2 = MinLevelFilter(logging.WARNING)
+h1.addFilter(f1)
+h2.addFilter(f2)
+
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+h1.setFormatter(formatter)
+h2.setFormatter(formatter)
+
+log = logging.getLogger('run-on-all-images')
+log.addHandler(h1)
+log.addHandler(h2)
+# Level set from the command line
+# log.setLevel(logging.DEBUG)
+###
+
+
+class OSAuth(object):
+    def __init__(self, user, password, tenant, auth_url):
+        self.user = user
+        self.password = password
+        self.tenant = tenant
+        self.auth_url = auth_url
+
+
+class Command(object):
+    def __init__(self, image_id, flavorname, key_name, cmd):
+        self.image_id = image_id
+        self.image_name = ''
+        self.flavorname = flavorname
+        self.key_name = key_name
+        self.cmd = cmd
+        self.exit_status = None
+        self.stdout = ''
+        self.stderr = ''
+
+    def __call__(self, nova):
+        """Create vm, run command, save results"""
+        image = nova.images.get(self.image_id)
+        self.image_name = image.name
+        flavor = nova.flavors.find(name=self.flavorname)
+
+        # Starting the VM
+        try:
+            log.debug("Creating instance with image id %s (%s) ", image.id, image.name)
+            vm = nova.servers.create('Running "%s" on "%s"' % (args.command, image.name),
+                                     image.id, flavor, key_name=self.key_name)
+            log.info("VM %s started using image %s (%s)", vm.id, image.name, image.id)
+        except Exception as ex:
+            log.error("Error starting vm with image %s (%s): %s", image.name, image.id, ex)
+            return
+        while vm.status == 'BUILD':
+            vm = nova.servers.get(vm)
+            log.debug("VM %s still building... waiting %d seconds", vm.id, WAIT)
+            time.sleep(WAIT)
+        if vm.status != 'ACTIVE':
+            log.warning("VM %s didn't start correctly: in state %s. Deleting it!", vm.id, vm.status)
+            self.exit_status = -1
+            vm.delete()
+        else:
+            log.info("VM %s(%s) in status ACTIVE", vm.name, vm.id)
+            for iteration in range(6*10): # 10 minutes
+                # Wait for the network
+                vm = nova.servers.get(vm)
+                if not vm.networks:
+                    log.debug("VM %s network not ready... waiting %d seconds", vm.id, 10)
+                    time.sleep(10)
+                    continue
+
+                self.run_command(vm, self.cmd)
+                if self.exit_status is not None:
+                    break
+
+            if self.exit_status is None:
+                log.error("Too many iterations, ignoring output from instance '%s' (%s)", vm.name, vm.id)
+        vm.delete()            
+        log.debug("command %s on image '%s' DONE with exit status %s", self.cmd, self.image_name, self.exit_status)
+
+    def run_command(self, vm, cmd):
+        # Connecting via ssh
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(IgnorePolicy())
+        all_ips = reduce(operator.add, vm.networks.values())
+        for ip in all_ips:
+            if args.verbose:
+                log.debug("Trying to connect to %s" % ip)
+            try:
+                ssh.connect(ip, username=args.ssh_username,
+                            allow_agent=True,
+                            timeout=TIMEOUT)
+                # No exception means connection was successful.
+                break
+            except (socket.error, socket.timeout) as ex:
+                # Maybe the machine is not up&running yet
+                log.debug("Host unreachable")
+                continue
+            except paramiko.AuthenticationException as ex:
+                # Unrecoverable error: wrong keypair or wrong username
+                log.error("%s (%s): Authentication error", vm.name, vm.id)
+                ssh.close()
+                self.exit_status = -1
+                break
+            except paramiko.SSHException as ex:
+                # Probably a temporary error, let's hope for the best
+                log.debug("Ignoring error '%s'" % ex)
+                continue
+
+        # If we reach this point, we should have a valid connection
+        if not ssh.get_transport() or not ssh.get_transport().is_active():
+            log.debug("Connection not ready yet")
+            return
+        session = ssh.get_transport().open_session()
+        session.exec_command(args.command)
+        while not session.recv_ready():
+            log.debug("Waiting for the command to return")
+            time.sleep(1)
+        while session.recv_ready():
+            log.debug("reading 1024 bytes from stdout")
+            self.stdout += session.recv(1024)
+        while session.recv_stderr_ready():
+            self.stderr += session.recv_stderr(1024)
+        self.exit_status = session.recv_exit_status()
+        session.close()
+
+
+class Worker(mp.Process):
+    def __init__(self, task_queue, result_queue, name, auth):
+        mp.Process.__init__(self)
+        self.name = str(name)
+        self.task_queue = task_queue
+        self.result_queue = result_queue
+        self.nova = nova_client.Client('1.1', auth.user, auth.password,
+                                       auth.tenant, auth.auth_url)
+        self.nova.authenticate()
+
+    def run(self):
+        self.images = 0
+        while True:
+            log.debug("Executing task: %s", self.name)
+            try:
+                task = self.task_queue.get(block=False)
+            except Queue.Empty:
+                log.debug("Queue empty. Exiting. (%s)", self.name)
+                break
+            try:
+                task(self.nova)
+            except Exception as ex:
+                log.warning("%s Got an exception: %s", self.name, ex)
+            self.images += 1
+            log.debug("Adding result of execution")
+            self.result_queue.put(task)
+        log.info("Worker %s exiting", self.name)
 
 class EnvDefault(argparse.Action):
     # This is took from
@@ -66,7 +240,7 @@ class IgnorePolicy(paramiko.MissingHostKeyPolicy):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--key-name', required=1, help='Keypair name.')
+    parser.add_argument('-k', '--key-name', required=1, help='Keypair name.')
     parser.add_argument('--os-username', action=EnvDefault, envvar="OS_USERNAME",
                         help='OpenStack administrator username. If not supplied, the value of the '
                         '"OS_USERNAME" environment variable is used.')
@@ -80,16 +254,21 @@ if __name__ == "__main__":
                         help='OpenStack auth url endpoint. If not supplied, the value of the '
                         '"OS_AUTH_URL" environment variable is used.')
 
-    parser.add_argument('--flavor', default='m1.tiny', help='Flavor.')
+    parser.add_argument('-f', '--flavor', default='m1.tiny', help='Flavor.')
     parser.add_argument('--public-images', action="store_true", default=False, help='Only use public images. Ignored if --images is used')
     parser.add_argument('-u', '--ssh-username', default='root', help='Username to use to connect to the VM')
     parser.add_argument('-v', '--verbose', action="count")
-
+    parser.add_argument('-p', '--parallel', type=int, default=10, help='Start N instances in parallel. Default: %(default)s', metavar='N')
     parser.add_argument('--images', nargs='*', help='Image IDs. Default: all images')
 
     parser.add_argument('-c', '--command', help='command to execute (quoted). Default: `%(default)s`', default=DEFAULT_COMMAND)
     args = parser.parse_args()
 
+    if not args.verbose:
+        args.verbose = 0
+    log.setLevel(30-(10*args.verbose))
+    if log.level < 10:
+        log.level = 10
     keystone = keystone_client.Client('2.0', username=args.os_username,
                                       password=args.os_password,
                                       tenant_name=args.os_tenant_name,
@@ -99,13 +278,17 @@ if __name__ == "__main__":
     auth_token = keystone.auth_token
     glance = glance_client.Client('1', endpoint=glance_url, token=auth_token)
     images = []
+    log.debug("Retrieving images")
     if not args.images:
         if args.public_images:
             images = [img for img in glance.images.list() if img.is_public]
+            log.debug("Only public images retrieved (%d)", len(images))
         else:
             images = list(glance.images.list())
+            log.debug("All images retrieved (%d)", len(images))
     else:
         images = [img for img in glance.images.list() if img.name in args.images or img.id in args.images]
+        log.debug("Only specific images retrieved (%d)", len(images))
 
     # Sort by image name
     images.sort(key=lambda x: x.name)
@@ -116,119 +299,70 @@ if __name__ == "__main__":
     try:
         flavor = nova.flavors.find(name=args.flavor)
     except nova_ex.NotFound as ex:
-        print("Flavor `%s` not found." % args.flavor)
-        print("Available flavors:")
-        print("* %s" % str.join('\n* ', [fl.name for fl in nova.flavors.list()]))
+        log.error("Flavor `%s` not found.", args.flavor)
+        log.error("Available flavors:")
+        log.error("* %s", str.join('\n* ', [fl.name for fl in nova.flavors.list()]))
         sys.exit(1)
 
     try:
         keypair = nova.keypairs.find(name=args.key_name)
     except nova_ex.NotFound as ex:
-        print("Keypair with name `%s` not found." % args.key_name)
-        print("Available keypairs:")
-        print("* %s" % str.join('\n* ', [kp.name for kp in nova.keypairs.list()]))
+        log.error("Keypair with name `%s` not found.", args.key_name)
+        log.error("Available keypairs:")
+        log.error("* %s", str.join('\n* ', [kp.name for kp in nova.keypairs.list()]))
         sys.exit(1)
 
-
     failed_images = []
+
+    # Create authentication object
+    auth = OSAuth(args.os_username, args.os_password, args.os_tenant_name, args.os_auth_url)
+    
+    # Add images id into the queue
+    tasks = mp.Queue()
+    results = mp.Queue()
     for image in images:
         imgsize = float(image.size) / 2**30
-        if imgsize > flavor.disk:
-            print("Image '%s' cannot be started with flavor '%s'!" % (image.name, flavor.name))
-            print("Image size: %.3fGB, flavor root disk: %d" % (imgsize, flavor.disk))
-            failed_images.append((image, 'disk too small', -1))
+        if imgsize > flavor.disk:            
+            log.warning("Image '%s' cannot be started with flavor '%s'. "
+                        "Image size: %.3fGB, flavor root disk: %d",
+                        image.name, flavor.name, imgsize, flavor.disk)
             continue
-        try:
-            vm = nova.servers.create('Running "%s" on "%s"' % (args.command, image.name),
-                                     image.id,
-                                     flavor,
-                                     key_name=args.key_name)
-        except Exception as ex:
-            print("Error starting vm with image %s (%s): %s" % (image.name, image.id, ex))
-            continue
-        print("VM %s started using image %s (%s)" % (vm.id, image.name, image.id))
-        while vm.status == 'BUILD':
-            vm = nova.servers.get(vm)
-            time.sleep(WAIT)
-        if vm.status != 'ACTIVE':
-            print("VM %s didn't start correctly: in state %s. Deleting it!" % (vm.id, vm.status))
-            failed_images.append((image, "VM didn't start", -1))
-            vm.delete()
-            continue
-        if args.verbose:
-            print("VM in status ACTIVE")
+        tasks.put(Command(image.id, flavor.name, keypair.name, args.command))
 
-        # Assuming it's fine
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(IgnorePolicy())
-        
-        for iteration in range(10):
-            if not vm.networks:
-                # Network is not done yet?
-                vm = nova.servers.get(vm)
-                continue
+    # Create consumers
+    workers = [Worker(tasks, results, "worker-%d" % i, auth) for i in range(args.parallel)]
+    for worker in workers:
+        worker.start()
 
-            all_ips = reduce(operator.add, vm.networks.values())
-            for ip in all_ips:
-                if args.verbose:
-                    print("Trying to connect to %s" % ip)
-                try:
-                    ssh.connect(ip, username=args.ssh_username,
-                                allow_agent=True,
-                                timeout=TIMEOUT)
-                    break
-                except (socket.error, socket.timeout) as ex:
-                    if args.verbose:
-                        print("Host unreachable")
-                except paramiko.SSHException as ex:
-                    if args.verbose:
-                        print("Ignoring error %s" % ex)
-            if ssh.get_transport() and ssh.get_transport().is_active():
-                if args.verbose:
-                    print("Connection open")
-                try:
-                    session = ssh.get_transport().open_session()
-                    session.exec_command(args.command)
-                    stdout = ""
-                    stderr = ""
-                    while not session.recv_ready():
-                        if args.verbose: print("waiting for input")
-                        time.sleep(1)
-                    while session.recv_ready():
-                        if args.verbose: print("reading 1024 bytes from stdout")
-                        stdout += (session.recv(1024))
+    while True:
+        for worker in workers:
+            try:
+                worker.join(timeout=WAIT)
+            except Exception as ex:
+                log.error("Getting error %s (%s) while joining task %s", ex, ex.__class__, worker.name)
+        if True not in [i.is_alive() for i in workers]:
+            log.info("All workers have exited.")
+            break
 
-                    while session.recv_stderr_ready():
-                        stderr += (session.recv_stderr(1024))
-                    rc = session.recv_exit_status()
-                    if rc:
-                        failed_images.append((image, "Exit status %d != 0" % rc, rc))
-
-                    if stdout:
-                        print("----- stdout BEGIN ----")
-                        sys.stdout.write(stdout)
-                        sys.stdout.flush()
-                        print("----- stdout END ----")
-                    if stderr:
-                        print("----- stderr BEGIN ----")
-                        sys.stdout.write(stderr)
-                        sys.stdout.flush()
-                        print("----- stderr END ----")
-                    print("Exit status: %d" % rc)
-                    session.close()
-                    ssh.close()
-                    break
-                except Exception as ex:
-                    print("Error while running command: %s" % ex)
-                    failed_images.append((image, "Error while running command", -1))
-                    break
+    while not results.empty():
+        result = results.get()
+        if result.exit_status == 0:
+            for line in result.stdout.strip().split('\n'):
+                print("%s:%s:%s" % (result.image_id, result.exit_status, line))
+            log.info("Image %s (%s) exit_status: %s, output: \n%s", result.image_name, result.image_id, result.exit_status, result.stdout.strip())
+            for line in result.stderr.strip().split('\n'):
+                if line:
+                    log.error("%s:%s:%s" % (result.image_id, result.exit_status, line))
+        else:
+            if result.exit_status is None:
+                log.error("Command didn't run on image %s (%s)", result.image_id, result.image_name)
             else:
-                if args.verbose:
-                    print("No ssh connection so far")
-        if args.verbose:
-            print("Deleting vm %s" % vm.id)
-        vm.delete()
-
-    for img, expl, rc in failed_images:
-        print("Image %s (%s) failed: %s" % (img.name, img.id, expl))
-    sys.exit(len(failed_images))
+                log.error("Command exited `%s` in image %s (%s)",
+                          result.exit_status, result.image_id, result.image_name)
+            for line in result.stdout.strip().split('\n'):
+                if line:
+                    log.error("%s (%s) STDOUT %s", result.image_name, result.image_id, line)
+            for line in result.stderr.strip().split('\n'):
+                if line:
+                    log.error("%s (%s) STDERR %s", result.image_name, result.image_id, line)
+    sys.exit(0)
