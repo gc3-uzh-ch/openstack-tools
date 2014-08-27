@@ -110,7 +110,7 @@ class Command(object):
         # Starting the VM
         try:
             log.debug("Creating instance with image id %s (%s) ", image.id, image.name)
-            vm = nova.servers.create('Running "%s" on "%s"' % (args.command, image.name),
+            vm = nova.servers.create('Running `%s` on `%s`' % (args.command, image.name),
                                      image.id, flavor, key_name=self.key_name)
             log.info("VM %s started using image %s (%s)", vm.id, image.name, image.id)
         except Exception as ex:
@@ -162,7 +162,8 @@ class Command(object):
                 log.debug("Host unreachable")
                 continue
             except paramiko.AuthenticationException as ex:
-                # Unrecoverable error: wrong keypair or wrong username
+                # Possibly unrecoverable error: wrong keypair or wrong username
+                # Try one more time, just in case
                 log.error("%s (%s): Authentication error", vm.name, vm.id)
                 ssh.close()
                 self.exit_status = -1
@@ -178,8 +179,11 @@ class Command(object):
             return
         session = ssh.get_transport().open_session()
         session.exec_command(args.command)
-        while not session.recv_ready():
-            log.debug("Waiting for the command to return")
+        maxwait = 120
+        for i in range(maxwait):
+            if session.recv_ready():
+                break
+            log.debug("Waiting for command to return")
             time.sleep(1)
         while session.recv_ready():
             log.debug("reading 1024 bytes from stdout")
@@ -216,6 +220,26 @@ class Worker(mp.Process):
             self.images += 1
             log.debug("Adding result of execution")
             self.result_queue.put(task)
+            # Printing the results right away
+            if task.exit_status == 0:
+                for line in task.stdout.strip().split('\n'):
+                    print("%s:%s:%s" % (task.image_id, task.exit_status, line))
+                log.info("Image %s (%s) exit_status: %s, output: \n%s", task.image_name, task.image_id, task.exit_status, task.stdout.strip())
+                for line in task.stderr.strip().split('\n'):
+                    if line:
+                        log.error("%s:%s:%s" % (task.image_id, task.exit_status, line))
+            else:
+                if task.exit_status is None:
+                    log.error("Command didn't run on image %s (%s)", task.image_id, task.image_name)
+                else:
+                    log.error("Command exited `%s` in image %s (%s)",
+                              task.exit_status, task.image_id, task.image_name)
+                for line in task.stdout.strip().split('\n'):
+                    if line:
+                        log.error("%s (%s) STDOUT %s", task.image_name, task.image_id, line)
+                for line in task.stderr.strip().split('\n'):
+                    if line:
+                        log.error("%s (%s) STDERR %s", task.image_name, task.image_id, line)
         log.info("Worker %s exiting", self.name)
 
 class EnvDefault(argparse.Action):
@@ -344,25 +368,26 @@ if __name__ == "__main__":
             log.info("All workers have exited.")
             break
 
-    while not results.empty():
-        result = results.get()
-        if result.exit_status == 0:
-            for line in result.stdout.strip().split('\n'):
-                print("%s:%s:%s" % (result.image_id, result.exit_status, line))
-            log.info("Image %s (%s) exit_status: %s, output: \n%s", result.image_name, result.image_id, result.exit_status, result.stdout.strip())
-            for line in result.stderr.strip().split('\n'):
-                if line:
-                    log.error("%s:%s:%s" % (result.image_id, result.exit_status, line))
-        else:
-            if result.exit_status is None:
-                log.error("Command didn't run on image %s (%s)", result.image_id, result.image_name)
-            else:
-                log.error("Command exited `%s` in image %s (%s)",
-                          result.exit_status, result.image_id, result.image_name)
-            for line in result.stdout.strip().split('\n'):
-                if line:
-                    log.error("%s (%s) STDOUT %s", result.image_name, result.image_id, line)
-            for line in result.stderr.strip().split('\n'):
-                if line:
-                    log.error("%s (%s) STDERR %s", result.image_name, result.image_id, line)
-    sys.exit(0)
+    results = [results.get() for i in range(results.qsize())]
+    # while not results.empty():
+    #     result = results.get()
+    #     if result.exit_status == 0:
+    #         for line in result.stdout.strip().split('\n'):
+    #             print("%s:%s:%s" % (result.image_id, result.exit_status, line))
+    #         log.info("Image %s (%s) exit_status: %s, output: \n%s", result.image_name, result.image_id, result.exit_status, result.stdout.strip())
+    #         for line in result.stderr.strip().split('\n'):
+    #             if line:
+    #                 log.error("%s:%s:%s" % (result.image_id, result.exit_status, line))
+    #     else:
+    #         if result.exit_status is None:
+    #             log.error("Command didn't run on image %s (%s)", result.image_id, result.image_name)
+    #         else:
+    #             log.error("Command exited `%s` in image %s (%s)",
+    #                       result.exit_status, result.image_id, result.image_name)
+    #         for line in result.stdout.strip().split('\n'):
+    #             if line:
+    #                 log.error("%s (%s) STDOUT %s", result.image_name, result.image_id, line)
+    #         for line in result.stderr.strip().split('\n'):
+    #             if line:
+    #                 log.error("%s (%s) STDERR %s", result.image_name, result.image_id, line)
+    # sys.exit(0)
