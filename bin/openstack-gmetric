@@ -1,0 +1,113 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 mode:python -*-# 
+# @(#)openstack-gmetric
+# 
+# 
+# Copyright (C) 2014, GC3, University of Zurich. All rights reserved.
+# 
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+# Sends metric data to a gmond daemon
+
+import argparse
+import os
+import subprocess as sp
+import sys
+
+from keystoneclient.v2_0 import client as kclient
+from novaclient import client as nova_client
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required, 
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+def run_command(cmd, debug=False):
+    if debug:
+        print(str.join(" ", cmd))
+    else:
+        sp.call(cmd)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--os-username', action=EnvDefault, envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password', action=EnvDefault, envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-tenant-name', action=EnvDefault, envvar="OS_TENANT_NAME",
+                        help='OpenStack administrator tenant name. If not supplied, the value of the '
+                        '"OS_TENANT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url', action=EnvDefault, envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+
+    # parser.add_argument('action', choices=['add', 'delete'], help="Action to perform. Can be either `add` or `delete`")
+    parser.add_argument('-d', '--debug', action="store_true", help="Only show the commands that will be issued.")
+    parser.add_argument('-a', '--active', action="store_true", help="Send the number of VMs in ACTIVE state")
+    parser.add_argument('-e', '--error', action="store_true", help="Send the number of VMs in ERROR state")
+    parser.add_argument('-b', '--building', action="store_true", help="Send the number of VMs in BUILDING state")
+    parser.add_argument('-s', '--shutoff', action="store_true", help="Send the number of VMs in SHUTOFF state")
+    parser.add_argument('-c', '--cores', action="store_true", help="Also send the number of vCPUs")
+
+    parser.add_argument('-g', '--gmetric', metavar='PATH', help="Path to gmetric. Default: %(default)s", default='/usr/bin/gmetric')
+    args = parser.parse_args()
+
+    nclient = nova_client.Client('1.1', args.os_username,
+                                 args.os_password,
+                                 args.os_tenant_name,
+                                 args.os_auth_url)
+    all_vms = nclient.servers.list(search_opts={'all_tenants':True})
+    flavors = { flv.id: flv for flv in nclient.flavors.list()}
+
+    for status in ['active', 'error', 'building', 'shutoff']:
+        if not getattr(args, status):
+            continue
+        vms = [vm for vm in all_vms if vm.status.lower() == status]
+    
+        cmd = [args.gmetric, "-d", "1200", "-x", "1200",
+               "--name=VMs_%s" % status,
+               "--value=%d" % len(vms),
+               "--type=uint16",
+               "-D", "Nr. of instances in %s state" % status.upper(),
+               ]
+        run_command(cmd, args.debug)
+    
+        if args.cores:
+            cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
+            cmd = [args.gmetric, "-d", "1200", "-x", "1200",
+                   "--name=VMs_%s_ncores" % status,
+                   "--value=%d" % cores,
+                   "--type=uint32",
+                   "-D", "Nr. of vCPUS used by instances in %s state" % status.upper(),
+                   ]
+            run_command(cmd, args.debug)
+
+    
