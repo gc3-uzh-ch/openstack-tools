@@ -96,7 +96,9 @@ if __name__ == "__main__":
             continue
         vms = [vm for vm in all_vms if vm.status.lower() == status]
     
-        cmd = [args.gmetric, "-d", "1200", "-x", "1200",
+        cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
+               "-x", str(args.gmetric_tmax),
+               "-g", args.gmetric_group,
                "--name=VMs_%s" % status,
                "--value=%d" % len(vms),
                "--type=uint16",
