@@ -106,8 +106,8 @@ if __name__ == "__main__":
     
         if args.cores:
             cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
-            cmd = [args.gmetric, "-d", args.gmetric_dmax,
-                   "-x", args.gmetric_tmax,
+            cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
+                   "-x", str(args.gmetric_tmax),
                    "-g", args.gmetric_group,
                    "--name=VMs_%s_ncores" % status,
                    "--value=%d" % cores,
