@@ -78,6 +78,10 @@ if __name__ == "__main__":
     parser.add_argument('-c', '--cores', action="store_true", help="Also send the number of vCPUs")
 
     parser.add_argument('-g', '--gmetric', metavar='PATH', help="Path to gmetric. Default: %(default)s", default='/usr/bin/gmetric')
+    parser.add_argument('--gmetric-dmax', type=int, default=1200, help="Value for option `--dmax` of gmetric command. Default: %(default)s")
+    parser.add_argument('--gmetric-tmax', type=int, default=1200, help="Value for option `--tmax` of gmetric command. Default: %(default)s")
+    parser.add_argument('--gmetric-group', default="openstack", help="Value of option `--group` of gmetric command. Default: %(default)s")
+
     args = parser.parse_args()
 
     nclient = nova_client.Client('1.1', args.os_username,
@@ -102,8 +106,9 @@ if __name__ == "__main__":
     
         if args.cores:
             cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
-            cmd = [args.gmetric, "-d", "1200", "-x", "1200",
-                   "-g openstack",
+            cmd = [args.gmetric, "-d", args.gmetric_dmax,
+                   "-x", args.gmetric_tmax,
+                   "-g", args.gmetric_group,
                    "--name=VMs_%s_ncores" % status,
                    "--value=%d" % cores,
                    "--type=uint32",
