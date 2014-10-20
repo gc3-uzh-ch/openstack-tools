@@ -103,6 +103,7 @@ if __name__ == "__main__":
         if args.cores:
             cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
             cmd = [args.gmetric, "-d", "1200", "-x", "1200",
+                   "-g openstack",
                    "--name=VMs_%s_ncores" % status,
                    "--value=%d" % cores,
                    "--type=uint32",
