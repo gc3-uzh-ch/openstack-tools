@@ -87,6 +87,9 @@ sed -i 's/name: cloud-user/name: gc3-user\
     sudo: \[\"ALL=(ALL) NOPASSWD:ALL\"\]\
     shell: \/bin\/bash/' /etc/cloud/cloud.cfg
 
+# Also ensure there is no "requiretty" in sudoers
+sed -i 's/\(Defaults.*requiretty\)/# \1/g' /etc/sudoers
+
 sed -i 's/disable_root.*/disable_root: 0/' /etc/cloud/cloud.cfg
 # Turn off additional services
 chkconfig postfix off
