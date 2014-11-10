@@ -81,6 +81,7 @@ if __name__ == "__main__":
     parser.add_argument('--gmetric-dmax', type=int, default=1200, help="Value for option `--dmax` of gmetric command. Default: %(default)s")
     parser.add_argument('--gmetric-tmax', type=int, default=1200, help="Value for option `--tmax` of gmetric command. Default: %(default)s")
     parser.add_argument('--gmetric-group', default="openstack", help="Value of option `--group` of gmetric command. Default: %(default)s")
+    parser.add_argument('--silent', action='store_true', default=False, help='Ignore any error.')
 
     args = parser.parse_args()
 
@@ -104,7 +105,14 @@ if __name__ == "__main__":
                "--type=uint16",
                "-D", "Nr. of instances in %s state" % status.upper(),
                ]
-        run_command(cmd, args.debug)
+        try:
+            run_command(cmd, args.debug)
+        except Exception as err:
+            if args.silent:
+                continue
+            else:
+                print("Error while running command '%s': %s" % (str.join(' ', cmd), err))
+                continue
     
         if args.cores:
             cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
@@ -116,6 +124,13 @@ if __name__ == "__main__":
                    "--type=uint32",
                    "-D", "Nr. of vCPUS used by instances in %s state" % status.upper(),
                    ]
-            run_command(cmd, args.debug)
+            try:
+                run_command(cmd, args.debug)
+            except Exception as err:
+                if args.silent:
+                    continue
+                else:
+                    print("Error while running command '%s': %s" % (str.join(' ', cmd), err))
+                    continue
 
     
