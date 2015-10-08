@@ -44,6 +44,7 @@ from keystoneclient.v3 import client as keystone_client
 from keystoneclient.openstack.common.apiclient.exceptions import NotFound
 
 from novaclient import client as nova_client
+from cinderclient import client as cinder_client
 
 import ceilometerclient.client
 
@@ -190,7 +191,7 @@ def make_ceilometer_client(opts):
         os_user_domain_id='default')
     return cclient
 
-def get_summary(opts, sess=None):
+def get_nova_summary(opts, sess=None):
     """Get summary usage from Nova"""
     if not sess:
         sess = make_session(opts)
@@ -198,6 +199,11 @@ def get_summary(opts, sess=None):
     usage = nclient.usage.list(opts.start, opts.end, detailed=True)
     return {i.tenant_id: i for i in usage}
 
+def get_cinder_summary(opts, sess=None):
+    if not sess:
+        sess = make_sessions(opts)
+    cclient = cinder_client.Client('2', session=sess)
+    
 def get_ceilometer_metric(opts, metric):
     """Get `metric` metric from ceilometer. Group it by project_id and return a dictionary {'project-id': metric}"""
     cclient = make_ceilometer_client(opts)
@@ -291,7 +297,7 @@ def main(opts):
 
     log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
     # Get usage from nova
-    summary = get_summary(opts, sess=sess)
+    summary = get_nova_summary(opts, sess=sess)
     instances = {}
     for report in summary.values():
         instances.update({i['instance_id']: i for i in report.server_usages})
@@ -303,6 +309,9 @@ def main(opts):
     cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
     # ram = get_raw_ceilometer_metric(opts, 'memory', g=['project_id', 'resource_id'])
 
+    # Get summary from cinder
+    cinder_summary = get_cinder_summary(opts, sess=sess)
+    
     # For each project, get the report.
     # all_reports is used to send a single report with all information to the ADMIN_RECIPIENT
     all_reports = {}
@@ -337,7 +346,7 @@ def main(opts):
                         send_mail_to(opts.smtp,
                                      opts.mail_from,
                                      recipient,
-                                     "ScienceCloud usage from %s to %s for project %s" % (opts.start, opts.end, pdict['name']),
+                                     "ScienceCloud usage for project %s from %s to %s" % (pdict['name'], opts.start, opts.end),
                                      report)
                     except Exception as ex:
                         log.error(
