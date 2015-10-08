@@ -1,0 +1,246 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""
+Tools to create projects on ScienceCloud, assign default security
+groups and set specific properties to the project to be used by
+`sc-send-report` tool
+
+"""
+
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import getpass
+import os
+import sys
+import logging
+import re
+import smtplib
+
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client as keystone_client
+from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+
+from novaclient import client as nova_client
+
+DEFAULT_SECGROUP_RULES = [
+    # proto, FromPort, ToPort, CIDR
+    ['icmp', '-1', '-1', '0.0.0.0/0'],
+    ['tcp', '22', '22', '0.0.0.0/0'],
+]
+USERS_MAILING_LIST='https://lists.uzh.ch/s3it.lists.uzh.ch/sympa/review/cloud'
+
+class ProjectExists(Exception): pass
+
+def print_postinstall_info(args):
+    print("""
+The project `%s` has been created.
+You should add the email of the contact owner and of the project owner
+to the cloud mailing list.
+
+Open the page:
+
+    %s
+
+and add the following email addresses:
+
+    %s
+    %s
+""" % (args.name, USERS_MAILING_LIST, args.contact_email, args.owner_email))
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+def setup():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+
+    parser.add_argument('-d',
+                        '--description',
+                        help="Project description")
+    parser.add_argument('-c',
+                        '--contact',
+                        required=True,
+                        help='Technical contact for this project.')
+    parser.add_argument('-C',
+                        '--contact-email',
+                        required=True,
+                        help='Email of the technical contact for this project.')
+    parser.add_argument('-o',
+                        '--owner',
+                        required=True,
+                        help='Full name of the owner of the project.')
+    parser.add_argument('-O',
+                        '--owner-email',
+                        required=True,
+                        help='Email address of the owner of the project.')
+    parser.add_argument('name', help='Name of the project')
+
+    opts = parser.parse_args()
+    return opts
+
+def make_session(opts):
+    """Create a Keystone V3 session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       user_id=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       project_domain_name='default')
+    sess = session.Session(auth=auth)
+    return sess
+
+def create_project(opts, sess):
+    print("Creating project %s owned by %s (%s) with contact %s (%s)" % (
+        opts.name, opts.owner, opts.owner_email, opts.contact, opts.contact_email))
+
+    keystone = keystone_client.Client(session=sess)
+
+    # Check if the project already exists
+    try:
+        keystone.projects.find(name=opts.name)
+    except NotFound:
+        pass
+    else:
+        raise ProjectExists
+
+    # Create the project
+    project = keystone.projects.create(name=opts.name,
+                                       domain='default',
+                                       description=opts.description,
+                                       enabled=True,
+                                       contact=opts.contact,
+                                       contact_email=opts.contact_email,
+                                       owner=opts.owner,
+                                       owner_email=opts.owner_email)
+
+    print("Adding current user (%s) to tenant %s" % (opts.os_username, opts.name))
+    # Note: this works because in ourcase userid == username
+    currentuser = keystone.users.get(opts.os_username)
+
+    # Default role is Member
+    memberrole = keystone.roles.find(name='Member')
+
+    keystone.roles.grant(memberrole,
+                         user=currentuser,
+                         project=project)
+
+
+def setup_default_security_group(opts, sess):
+    print("Setting up default security group for project %s: %s" % (opts.name, DEFAULT_SECGROUP_RULES))
+
+    opts.os_project_name = opts.name
+    sess = make_session(opts)
+    nclient = nova_client.Client('2', session=sess)
+    secgroup = nclient.security_groups.find(name='default')
+    for rule in DEFAULT_SECGROUP_RULES:
+        try:
+            nclient.security_group_rules.create(secgroup.id, *rule)
+        except Exception, ex:
+            print("Ignoring error '%s' when adding rule %s to security group"
+            "'%s'" % (ex, rule, secgroup.name))
+
+# From https://gist.github.com/blinks/47987
+def verify_email_address(addr, local_addr='sysadmin@s3it.lists.uzh.ch'):
+  """Verify the existance of a single email address."""
+  MX = re.compile(r'^.*\s+mail exchanger = (?P<priority>\d+) (?P<host>\S+)\s*$')
+  logging.debug('Verifying existance of %r', addr)
+  # Find mail exchanger of this address.
+  host = addr.rsplit('@', 2)[1]
+  p = os.popen('nslookup -q=mx %s' % host, 'r')
+  mxes = list()
+  for line in p:
+    m = MX.match(line)
+    if m is not None:
+      mxes.append(m.group('host'))
+  logging.debug('Found %d mail exchangers for %s.', len(mxes), host)
+  if len(mxes) == 0:
+    return False
+  else:
+    host = mxes[0]
+
+  # Connect to the mail server and check.
+  logging.debug('Checking address with %s.', host)
+  server = smtplib.SMTP(host)
+  server.ehlo_or_helo_if_needed()
+  code, response = server.docmd('mail from:', 'john.smith@example.com')
+  logging.debug('MAIL FROM command returned %d: %r', code, response)
+  code, response = server.docmd('rcpt to:', addr)
+  logging.debug('RCPT TO command returned %d: %r', code, response)
+  server.quit()
+  return (code // 100 == 2)
+
+
+def main(opts):
+    # Ensure the email address is valid
+    
+    if not verify_email_address(opts.owner_email):
+        print("Wrong email address %s for option --owner-email" % opts.owner_email)
+        sys.exit(1)
+    elif verify_email_address(opts.contact_email):
+        print("Wrong email address %s for option --contact-email" % opts.contact_email)
+        sys.exit(1)
+
+    sess = make_session(opts)
+    try:
+        create_project(opts, sess)
+    except ProjectExists:
+        print("Project %s already exists. Nothing to do." % opts.name)
+        return 1
+    setup_default_security_group(opts, sess)
+    print_postinstall_info(opts)
+
+
+if __name__ == "__main__":
+    opts = setup()
+    sys.exit(main(opts))
