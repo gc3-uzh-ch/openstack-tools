@@ -1,0 +1,353 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""Collect OpenStack usage information, produce a report and send an
+email to the project contact email addresses.
+
+"""
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+# Metrics http://docs.openstack.org/admin-guide-cloud/content/section_telemetry-compute-meters.html
+
+import argparse
+import calendar
+import datetime
+import getpass
+import logging
+import os
+import prettytable
+import smtplib
+import sys
+from email.mime.text import MIMEText
+
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client as keystone_client
+from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+
+from novaclient import client as nova_client
+
+import ceilometerclient.client
+
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
+
+def mib_to_str(value):
+    """Convert a numeric value expressed in MiB to a human-readable format"""
+    if value > 2**20:
+        return "%.2f TiB" % (value/2**20)
+    elif value > 2**10:
+        return "%.2f GiB" % (value/2**10)
+    else:
+        return "%.2f MiB" % value
+
+def memoize(f):
+    memo = {}
+    def helper(x):
+        if f not in memo:
+            memo[f] = f(x)
+        return memo[f]
+    return helper
+
+@memoize
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       user_id=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       project_domain_name='default')
+    sess = session.Session(auth=auth)
+    return sess
+
+def send_mail_to(smtp, mailfrom, to, subject, msg):
+    msg = MIMEText(msg)
+    msg['Subject'] = subject
+    msg['From'] = mailfrom
+    msg['To'] = to
+
+    s = smtplib.SMTP(smtp)
+    log.info("Sending email to %s with subject \"%s\"", to, subject)
+    s.sendmail(mailfrom, [to], msg.as_string())
+    s.quit()
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+def setup():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+
+    parser.add_argument('--send-mail',
+                        action='store_true',
+                        help='Send an email to contact_email and owner_email '
+                        'properties of the project')
+    parser.add_argument('--admin-email',
+                        default="sysadmin@s3it.lists.uzh.ch",
+                        help="Send full report for all the tenants to ADMIN_EMAIL. Default: %(default)s")
+    parser.add_argument('--smtp',
+                        default="smtp.uzh.ch",
+                        help="SMTP server to use. Default: %(default)s")
+
+    parser.add_argument('--mail-from',
+                        default="sysadmin@s3it.lists.uzh.ch",
+                        help="Sender Email address. Default: %(default)s")
+    parser.add_argument('--start',
+                        type=lambda x: datetime.datetime.strptime(x, '%Y-%m-%d'),
+                        help="Create report from START date (format: YYYY-MM-DD)")
+    parser.add_argument('--end',
+                        type=lambda x: datetime.datetime.strptime(x, '%Y-%m-%d'),
+                        help="Create report to END date (format: YYYY-MM-DD)")
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+    parser.add_argument('project',
+                        nargs='*',
+                        help="Create reports only for these projects. Default: all projects")
+
+    opts = parser.parse_args()
+
+    # Set verbosity
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
+    # if not opts.start or not opts.end:
+    #     pass # not yet implemented
+    if (opts.start and not opts.end) or \
+       (not opts.start and opts.end):
+        parser.error("You either specify both --start and --end, or you just use the default")
+    if not opts.start:
+        now = datetime.datetime.now()
+        # First day of previous month
+        year = now.year if now.month > 1 else now.year-1
+        month = now.month-1 if now.month > 1 else 12
+        lastday = calendar.monthrange(year, month)[-1]
+        opts.start = datetime.datetime(year, month, 1)
+        # Last day of previous month, time 23:59
+        opts.end = datetime.datetime(year, month, lastday, 23, 59)
+    else:
+        # opts.end should be the whole day
+        opts.end = datetime.datetime(opts.end.year, opts.end.month, opts.end.day, 23, 59)
+
+    return opts
+
+@memoize
+def make_ceilometer_client(opts):
+    cclient = ceilometerclient.client.get_client(
+        2,
+        os_username=opts.os_username,
+        os_password=opts.os_password,
+        os_tenant_name=opts.os_project_name,
+        os_auth_url=opts.os_auth_url,
+        os_project_domain_id='default',
+        os_user_domain_id='default')
+    return cclient
+
+def get_summary(opts, sess=None):
+    """Get summary usage from Nova"""
+    if not sess:
+        sess = make_session(opts)
+    nclient = nova_client.Client('2', session=sess)
+    usage = nclient.usage.list(opts.start, opts.end, detailed=True)
+    return {i.tenant_id: i for i in usage}
+
+def get_ceilometer_metric(opts, metric):
+    """Get `metric` metric from ceilometer. Group it by project_id and return a dictionary {'project-id': metric}"""
+    cclient = make_ceilometer_client(opts)
+    data = cclient.statistics.list(metric, groupby='project_id')
+    return {i.groupby['project_id']:i for i in data}
+
+def get_raw_ceilometer_metric(opts, metric, g=None, q=None):
+    cclient = make_ceilometer_client(opts)
+    data = cclient.statistics.list(metric, groupby=g, q=q)
+    return data
+
+def create_report_for_project(project, summary, instances, cpu_util, cpu_util_detailed):
+    """Create a report for a specific report. Returns a text report"""
+    report = []
+
+    pt = prettytable.PrettyTable(('Project', 'vcpu hours', 'cpu time (hours)', 'ram (hours)', 'avg cpu %'))
+    pt.align['Project'] = 'l'
+    pt.align['vcpu hours'] = 'r'
+    pt.align['cpu time (hours)'] = 'r'
+    pt.align['ram (hours)'] = 'r'
+    pt.align['avg cpu %'] = 'r'
+
+    # cpu = get_ceilometer_metric(opts, 'cpu')
+    pt.add_row([project.name,
+                "%.2f" % summary.total_vcpus_usage,
+                "%.2f" % (cpu_util.avg * summary.total_vcpus_usage / 100),
+                # "%.2f" % (cpu[project].max/1e+9/60/60),
+                mib_to_str(summary.total_memory_mb_usage),
+                "%.2f %%" % cpu_util.avg,
+            ])
+    report.append("Summary of usage for project %s\n" % project.name)
+    report.append(str(pt))
+
+    # Again, for each project and server
+    pt = prettytable.PrettyTable((
+        'instance UUID',
+        'instance name',
+        'flavor',
+        'vcpus',
+        'avg cpu %',
+        'cpu hours',
+        'cpu time',
+    ), print_empty=False)
+    pt.align['instance name'] = 'l'
+    pt.align['flavor'] = 'l'
+    pt.align['vcpus'] = 'r'
+    pt.align['avg cpu %'] = 'r'
+    pt.align['cpu hours'] = 'r'
+    pt.align['cpu time'] = 'r'
+
+    mycpu_util = {i.groupby['resource_id']:i for i in cpu_util_detailed}
+    # mycpu = {i.groupby['resource_id']:i for i in cpu if i.groupby['project_id'] == project_id}
+    for uuid in mycpu_util:
+        if uuid not in instances:
+            log.info("No detailed information for instance %s - skipping" % uuid)
+            continue
+        instance = instances[uuid]
+        cpuhours = instance['hours'] * instance['vcpus']
+        pt.add_row([uuid,
+                    instance['name'],
+                    instance['flavor'],
+                    instance['vcpus'],
+                    "%.2f %%" % mycpu_util[uuid].avg,
+                    "%.2f hours" % cpuhours,
+                    # This is a cumulative value, so we need to get the *max*
+                    # "%.2f hours" % (mycpu[uuid].max/1e+9/60/60),
+                    #
+                    # However, since this value is set to 0 when
+                    # the instance is migrated or stopped and
+                    # restarted, we better use the cpu_util
+                    # instead...
+                    "%.2f hours" % (mycpu_util[uuid].avg * cpuhours / 100),
+                    ])
+
+    table = str(pt)
+    if table:
+        report.append("\nDetailed usage for project %s - currently running instances\n" % project.name)
+        report.append(str(table))
+    return str.join('\n', report)
+
+def main(opts):
+    sess = make_session(opts)
+    keystone = keystone_client.Client(session=sess)
+
+    # Get the projects
+    all_projects = keystone.projects.list()
+    if opts.project:
+        projects = {p.id: p for p in all_projects  if p.name in opts.project or p.id in opts.project}
+    else:
+        projects = {p.id:p for p in all_projects}
+
+    log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
+    # Get usage from nova
+    summary = get_summary(opts, sess=sess)
+    instances = {}
+    for report in summary.values():
+        instances.update({i['instance_id']: i for i in report.server_usages})
+
+    log.debug("Getting detailed information for %s instances" % len(instances))
+    # Get usage from ceilometer
+    # cpu_util = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
+    cpu_util = get_ceilometer_metric(opts, 'cpu_util')
+    cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
+    # ram = get_raw_ceilometer_metric(opts, 'memory', g=['project_id', 'resource_id'])
+
+    # For each project, get the report.
+    # all_reports is used to send a single report with all information to the ADMIN_RECIPIENT
+    all_reports = {}
+    for project in projects.values():
+        if project.id not in summary or project.id not in cpu_util:
+            log.warn("No detailed report for project %s: skipping" % project.name)
+            continue
+        report = create_report_for_project(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
+        all_reports[project.id] = report
+
+    if opts.send_mail:
+        try:
+            send_mail_to(opts.smtp,
+                         opts.mail_from,
+                         opts.admin_email,
+                         "ScienceCloud usage from %s to %s" % (opts.start, opts.end),
+                         str.join("\n\n", all_reports.values()))
+        except Exception as ex:
+            log.error("Unable to send email to admin %s: %s",
+                      opts.admin_email, ex)
+        for project_id, report in all_reports.items():
+            try:
+                pdict = projects.get(project_id).to_dict()
+                recipients = set([pdict.get('contact_email'),
+                                  pdict.get('owner_email')])
+            except Exception as ex:
+                log.error("Error getting recipients address from project id %s" % project_id)
+                continue
+            for recipient in recipients:
+                if recipient:
+                    try:
+                        send_mail_to(opts.smtp,
+                                     opts.mail_from,
+                                     recipient,
+                                     "ScienceCloud usage from %s to %s for project %s" % (opts.start, opts.end, pdict['name']),
+                                     report)
+                    except Exception as ex:
+                        log.error(
+                            "Unable to send report email for project %s to"
+                            " recipient %s: %s", pdict['name'], recipient, ex)
+    else:
+        for project_id, report in all_reports.items():
+            print(report)
+            print("")
+
+if __name__ == "__main__":
+    opts = setup()
+    sys.exit(main(opts))
