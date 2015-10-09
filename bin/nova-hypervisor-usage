@@ -86,14 +86,14 @@ class ProxyFlavor(object):
         delattr(object.__getattribute__(self, "_obj"), name)
     def __setattr__(self, name, value):
         setattr(object.__getattribute__(self, "_obj"), name, value)
-    
+
     def __nonzero__(self):
         return bool(object.__getattribute__(self, "_obj"))
     def __str__(self):
         return str(object.__getattribute__(self, "_obj"))
     def __repr__(self):
         return repr(object.__getattribute__(self, "_obj"))
-    
+
 class EnvDefault(argparse.Action):
     # This is took from
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
@@ -158,12 +158,12 @@ def filter_by_spec(flavor, hypervisors):
             pass
     return valid_hypervisors
 
-                
+
 def compute_capability(flavor, hypervisors):
     hypervisors = filter_by_spec(flavor, hypervisors)
     count = 0
     max_count = 0
-    
+
     for node in hypervisors:
         vms_by_cpus = int((node.vcpus_max - node.vcpus_used) / flavor.vcpus)
         vms_by_mem = node.memory_mb_free / flavor.ram
@@ -204,9 +204,11 @@ def main(opts):
         hyp.vcpus_free = hyp.vcpus_max - hyp.vcpus_used
         hyp.memory_mb_free = hyp.memory_mb - hyp.memory_mb_used
 
+    all_vms = nova.servers.list(search_opts={'all_tenants': 'True'})
+    log.info("%d vms currently running" % len(all_vms))
     if opts.long:
         # If --long, print a table with all hypervisors
-        pt = prettytable.PrettyTable(('Hostname', 'state', 'cores', 'vcpus', 'vcpus_used', 'vcpus_free', 'mem', 'mem_used', 'mem_free'))
+        pt = prettytable.PrettyTable(('Hostname', 'state', 'cores', 'vcpus', 'VMs', 'vcpus_used', 'vcpus_free', 'mem', 'mem_used', 'mem_free'))
         for field in pt.field_names:
             pt.align[field] = 'r'
         pt.align['Hostname'] = 'l'
@@ -214,9 +216,10 @@ def main(opts):
         for hyp in hypervisors:
             pt.add_row([
                 hyp.hypervisor_hostname,
-                hyp.state,
+                "%s/%s" % (hyp.state, hyp.status),
                 hyp.vcpus,
                 hyp.vcpus_max,
+                len([vm for vm in all_vms if getattr(vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname') == hyp.hypervisor_hostname]),
                 hyp.vcpus_used,
                 hyp.vcpus_free,
                 mib_to_str(hyp.memory_mb),
@@ -230,8 +233,6 @@ def main(opts):
         pt.align[field] = 'r'
     pt.align['flavor'] = 'l'
 
-    all_vms = nova.servers.list(search_opts={'all_tenants': 'True'})
-    log.info("%d vms currently running" % len(all_vms))
     # For each flavor, check how many can be ran
     for flavor in nova.flavors.list():
         flavor = ProxyFlavor(flavor)
@@ -243,8 +244,7 @@ def main(opts):
                    availf])
     print(pt.get_string(sortby='max', reversesort=True))
 
-    
+
 if __name__ == "__main__":
     opts = setup()
     sys.exit(main(opts))
-    
