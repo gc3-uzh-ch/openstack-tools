@@ -199,11 +199,23 @@ def get_nova_summary(opts, sess=None):
     usage = nclient.usage.list(opts.start, opts.end, detailed=True)
     return {i.tenant_id: i for i in usage}
 
-def get_cinder_summary(opts, sess=None):
+def get_cinder_summary(opts, projects, sess=None):
     if not sess:
         sess = make_sessions(opts)
     cclient = cinder_client.Client('2', session=sess)
-    
+    volume_types = cclient.volume_types.list()
+    report = {}
+    for project in projects:
+        quota = cclient.quotas.get(project.id, usage=True)
+        report[project.id] = {'': {'volumes': quota.volumes,
+                                   'gigabytes': quota.gigabytes}}
+        for vol in volume_types:
+            if hasattr(quota, 'volumes_%s' % vol.name) and \
+               hasattr(quota, 'gigabytes_%s' % vol.name):
+                report[project.id][vol.name] = {'volumes': getattr(quota, 'volumes_%s' % vol.name),
+                                                'gigabytes': getattr(quota, 'gigabytes_%s' % vol.name)}
+    return report
+
 def get_ceilometer_metric(opts, metric):
     """Get `metric` metric from ceilometer. Group it by project_id and return a dictionary {'project-id': metric}"""
     cclient = make_ceilometer_client(opts)
@@ -215,9 +227,31 @@ def get_raw_ceilometer_metric(opts, metric, g=None, q=None):
     data = cclient.statistics.list(metric, groupby=g, q=q)
     return data
 
-def create_report_for_project(project, summary, instances, cpu_util, cpu_util_detailed):
+def create_report_for_project(project, nova_summary, cinder_summary, instances, cpu_util, cpu_util_detailed):
     """Create a report for a specific report. Returns a text report"""
     report = []
+
+    pt = prettytable.PrettyTable(('Project', 'volume type', 'volumes', 'volumes %', 'gigabytes', 'gigabytes %'))
+    for field in pt.field_names:
+        pt.align[field] = 'r'
+    pt.align['Project'] = 'l'
+    pt.align['volume type'] = 'l'
+    global_quota = cinder_summary['']
+    for voltype, quota in cinder_summary.items():
+        volumes = quota['volumes']
+        if volumes['in_use'] == 0: continue
+        gigabytes = quota['gigabytes']
+        vol_limit = volumes['limit'] if volumes['limit'] != -1 else global_quota['volumes']['limit']
+        gb_limit = gigabytes['limit'] if gigabytes['limit'] != -1 else global_quota['gigabytes']['limit']
+        pt.add_row([project.name,
+                    voltype,
+                    "%d" % volumes['in_use'],
+                    "%.2f %%" % abs(volumes['in_use']*100.0/vol_limit),
+                    "%d" % gigabytes['in_use'],
+                    "%.2f %%" % abs(gigabytes['in_use']*100.0/gb_limit),
+        ])
+    report.append("Summary of storage usage for project %s\n" % project.name)
+    report.append(str(pt))
 
     pt = prettytable.PrettyTable(('Project', 'vcpu hours', 'cpu time (hours)', 'ram (hours)', 'avg cpu %'))
     pt.align['Project'] = 'l'
@@ -228,13 +262,13 @@ def create_report_for_project(project, summary, instances, cpu_util, cpu_util_de
 
     # cpu = get_ceilometer_metric(opts, 'cpu')
     pt.add_row([project.name,
-                "%.2f" % summary.total_vcpus_usage,
-                "%.2f" % (cpu_util.avg * summary.total_vcpus_usage / 100),
+                "%.2f" % nova_summary.total_vcpus_usage,
+                "%.2f" % (cpu_util.avg * nova_summary.total_vcpus_usage / 100),
                 # "%.2f" % (cpu[project].max/1e+9/60/60),
-                mib_to_str(summary.total_memory_mb_usage),
+                mib_to_str(nova_summary.total_memory_mb_usage),
                 "%.2f %%" % cpu_util.avg,
             ])
-    report.append("Summary of usage for project %s\n" % project.name)
+    report.append("\nSummary of usage for project %s\n" % project.name)
     report.append(str(pt))
 
     # Again, for each project and server
@@ -296,6 +330,9 @@ def main(opts):
         projects = {p.id:p for p in all_projects}
 
     log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
+
+    cinder_summary = get_cinder_summary(opts, projects.values(), sess=sess)
+
     # Get usage from nova
     summary = get_nova_summary(opts, sess=sess)
     instances = {}
@@ -304,14 +341,11 @@ def main(opts):
 
     log.debug("Getting detailed information for %s instances" % len(instances))
     # Get usage from ceilometer
-    # cpu_util = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
     cpu_util = get_ceilometer_metric(opts, 'cpu_util')
     cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
-    # ram = get_raw_ceilometer_metric(opts, 'memory', g=['project_id', 'resource_id'])
 
     # Get summary from cinder
-    cinder_summary = get_cinder_summary(opts, sess=sess)
-    
+
     # For each project, get the report.
     # all_reports is used to send a single report with all information to the ADMIN_RECIPIENT
     all_reports = {}
@@ -319,8 +353,18 @@ def main(opts):
         if project.id not in summary or project.id not in cpu_util:
             log.warn("No detailed report for project %s: skipping" % project.name)
             continue
-        report = create_report_for_project(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
-        all_reports[project.id] = report
+        try:
+            report = create_report_for_project(project,
+                                               summary[project.id],
+                                               cinder_summary[project.id],
+                                               instances,
+                                               cpu_util[project.id],
+                                               [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
+                                           # [],
+                                           # [])
+            all_reports[project.id] = report
+        except Exception as ex:
+            log.error("Error creating report for project %s: %s", project.name, ex)
 
     if opts.send_mail:
         try:
