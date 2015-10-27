@@ -43,6 +43,9 @@ from keystoneclient.openstack.common.apiclient.exceptions import NotFound
 
 from novaclient import client as nova_client
 
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
+
 DEFAULT_SECGROUP_RULES = [
     # proto, FromPort, ToPort, CIDR
     ['icmp', '-1', '-1', '0.0.0.0/0'],
@@ -106,6 +109,10 @@ def setup():
                         help='OpenStack auth url endpoint. If not supplied, the value of the '
                         '"OS_AUTH_URL" environment variable is used.')
 
+    parser.add_argument('-v',
+                        '--verbose',
+                        action='count', default=0,
+                        help='Increase verbosity')
     parser.add_argument('-d',
                         '--description',
                         help="Project description")
@@ -127,7 +134,14 @@ def setup():
                         help='Email address of the owner of the project.')
     parser.add_argument('name', help='Name of the project')
 
+    parser.add_argument('--no-verify-email',
+                        action='store_true',
+                        help='Do not attempt to verify that email addresses '
+                        'are deliverable.')
+
     opts = parser.parse_args()
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
     return opts
 
 def make_session(opts):
@@ -191,43 +205,47 @@ def setup_default_security_group(opts, sess):
             "'%s'" % (ex, rule, secgroup.name))
 
 # From https://gist.github.com/blinks/47987
-def verify_email_address(addr, local_addr='sysadmin@s3it.lists.uzh.ch'):
-  """Verify the existance of a single email address."""
-  MX = re.compile(r'^.*\s+mail exchanger = (?P<priority>\d+) (?P<host>\S+)\s*$')
-  logging.debug('Verifying existance of %r', addr)
-  # Find mail exchanger of this address.
-  host = addr.rsplit('@', 2)[1]
-  p = os.popen('nslookup -q=mx %s' % host, 'r')
-  mxes = list()
-  for line in p:
-    m = MX.match(line)
-    if m is not None:
-      mxes.append(m.group('host'))
-  logging.debug('Found %d mail exchangers for %s.', len(mxes), host)
-  if len(mxes) == 0:
-    return False
-  else:
-    host = mxes[0]
+def verify_email_address(addr, local_addr='sysadmin@s3it.lists.uzh.ch', skip_delivery_check=False):
+    """Verify the existance of a single email address."""
+    MX = re.compile(r'^.*\s+mail exchanger = (?P<priority>\d+) (?P<host>\S+)\.\s*$')
+    logging.debug('Verifying existance of %r', addr)
+    # Find mail exchanger of this address.
+    host = addr.rsplit('@', 2)[1]
+    p = os.popen('nslookup -q=mx %s' % host, 'r')
+    mxes = list()
+    for line in p:
+        m = MX.match(line)
+        if m is not None:
+            mxes.append(m.group('host'))
+    logging.debug('Found %d mail exchangers for %s.', len(mxes), host)
+    if len(mxes) == 0:
+        return False
+    else:
+        host = mxes[0]
 
-  # Connect to the mail server and check.
-  logging.debug('Checking address with %s.', host)
-  server = smtplib.SMTP(host)
-  server.ehlo_or_helo_if_needed()
-  code, response = server.docmd('mail from:', 'john.smith@example.com')
-  logging.debug('MAIL FROM command returned %d: %r', code, response)
-  code, response = server.docmd('rcpt to:', addr)
-  logging.debug('RCPT TO command returned %d: %r', code, response)
-  server.quit()
-  return (code // 100 == 2)
+    if skip_delivery_check:
+        log.debug("Skipping delivery check for email address %s" % addr)
+        return True
+
+    # Connect to the mail server and check.
+    logging.debug('Checking address with %s.', host)
+    server = smtplib.SMTP(host)
+    server.ehlo_or_helo_if_needed()
+    code, response = server.docmd('mail from:', local_addr)
+    logging.debug('MAIL FROM command returned %d: %r', code, response)
+    code, response = server.docmd('rcpt to:', addr)
+    logging.debug('RCPT TO command returned %d: %r', code, response)
+    server.quit()
+    return (code // 100 == 2)
 
 
 def main(opts):
     # Ensure the email address is valid
-    
-    if not verify_email_address(opts.owner_email):
+
+    if not verify_email_address(opts.owner_email, skip_delivery_check=opts.no_verify_email):
         print("Wrong email address %s for option --owner-email" % opts.owner_email)
         sys.exit(1)
-    elif verify_email_address(opts.contact_email):
+    elif not verify_email_address(opts.contact_email, skip_delivery_check=opts.no_verify_email):
         print("Wrong email address %s for option --contact-email" % opts.contact_email)
         sys.exit(1)
 
