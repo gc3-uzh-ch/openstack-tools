@@ -43,9 +43,9 @@ Customization performed on the created images consist of:
 * ensure the system has ssh host keys
 * configure via dhcp any network interface (not just the first one)
 
-Tools present in ``bin`` directory
-==================================
 
+Tools present in the ``bin`` directory
+======================================
 
 ``openstack-accounting-usage``
 ------------------------------
@@ -107,6 +107,7 @@ In order to make this command work you need to:
   on the compute node and if ``libvirt.LibvirtDriver`` is used as
   ``compute_driver``.
 
+
 ``openstack-create-delete-user``
 --------------------------------
 
@@ -160,7 +161,7 @@ By adding multiple `-v` options you will get a more verbose output:
     also print the number of compute nodes, total number of CPUs, CPUs
     currently in use, total ram, total ram in use, total disk, total
     disk in use.
-    
+
 ``-vv``
     also print information about each flavor (vcus, ram, disk etc)
 
@@ -210,3 +211,15 @@ number of `vms` currently running (default: sort by `name`)
 This tool uses the same APIs used by the ``nova-manage`` tools. As
 such, you will need to provide a proper ``/etc/nova/nova.conf`` in
 order to be able to access the database.
+
+
+``openstack-mkpasswd``
+----------------------
+
+Hash a given password and output it in a format suitable for direct
+insertion in Keystone's user database.
+
+This is primarily meant to be used in all cases where users cannot
+change the password themselves: with this little utility, an OpenStack
+admin can replace (or set anew) a password entry without being told
+the cleartext in any way.

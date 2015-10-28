@@ -1,0 +1,112 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-#
+"""
+Hash a given password and output it in a format suitable for direct
+insertion in Keystone's user database.
+"""
+#
+# Copyright (C) 2015, S3IT, Zentrale Informatik, University of Zurich.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+__docformat__ = 'reStructuredText'
+__author__ = 'Riccardo Murri <riccardo.murri@gmail.com>'
+
+
+import argparse
+from getpass import getpass
+import logging
+import sys
+
+# see: https://pypi.python.org/pypi/passlib
+try:
+    import passlib.hash
+except ImportError:
+    sys.stderr.write("""
+Cannot import Python library `passlib`, which is required
+for correct operation of `openstack-mkpasswd`.  Aborting execution.
+
+Please install it with::
+
+        pip install passlib
+
+On Debian/Ubuntu systems you might use instead::
+
+        sudo apt-get install python-passlib
+""")
+    sys.exit(1)
+
+
+## constants
+
+MAX_PASSWORD_LENGTH = 4096
+
+# this is actually configurable in OpenStack but does anyone change the default?
+CRYPT_STRENGTH=40000
+
+
+## aux functions
+
+def trunc_password(password):
+    """Truncate passwords to the MAX_PASSWORD_LENGTH."""
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return password[:MAX_PASSWORD_LENGTH]
+    else:
+        return password
+
+def hash_password(password):
+    """Hash a password. Hard."""
+    password_utf8 = trunc_password(password).encode('utf-8')
+    if passlib.hash.sha512_crypt.identify(password_utf8):
+        return password_utf8
+    h = passlib.hash.sha512_crypt.encrypt(password_utf8,
+                                          rounds=CRYPT_STRENGTH)
+    return h
+
+
+## command-line parsing
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('-c', '--cleartext', metavar='PASSWORD',
+                    action='store', dest='cleartext', default=None,
+                    help=("Hash the given cleartext password."))
+parser.add_argument('-f', '--from-file', metavar='FILE',
+                    action='store', dest='file', default=None,
+                    help=("Read the contents of FILE"
+                          " and use them as the (cleartext)"
+                          " password. Note: the *whole* contents"
+                          " of FILE will be used, including"
+                          " trailing whitespace and newline characters."))
+args = parser.parse_args()
+
+
+## main
+
+if (args.cleartext and args.file):
+    sys.stderr.write(
+        "Options `-c`/`--cleartext` and `-f`/`--file`"
+        " are mutually incompatible."
+        " Type `{me} --help` for usage information."
+        .format(me=sys.argv[0]))
+elif args.cleartext:
+    cleartext = hash_password(args.cleartext)
+elif args.file:
+    cleartext = open(args.file).read()
+else:
+    cleartext = getpass('Enter password to encrypt: ')
+
+print(hash_password(cleartext))
+
+sys.exit(0)
