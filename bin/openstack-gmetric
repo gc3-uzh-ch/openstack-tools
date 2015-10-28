@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 mode:python -*-# 
+# -*- coding: utf-8 mode:python -*-#
 # @(#)openstack-gmetric
-# 
-# 
+#
+#
 # Copyright (C) 2014, GC3, University of Zurich. All rights reserved.
-# 
-# 
+#
+#
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
 # Free Software Foundation; either version 2 of the License, or (at your
@@ -30,7 +30,13 @@ import os
 import subprocess as sp
 import sys
 
-from keystoneclient.v2_0 import client as kclient
+try:
+    from keystoneclient.auth.identity import v3
+    from keystoneclient import session
+    from keystoneclient.v3 import client as keystone_client
+except ImportError:
+    pass
+
 from novaclient import client as nova_client
 
 class EnvDefault(argparse.Action):
@@ -42,7 +48,7 @@ class EnvDefault(argparse.Action):
                 default = os.environ[envvar]
         if required and default:
             required = False
-        super(EnvDefault, self).__init__(default=default, required=required, 
+        super(EnvDefault, self).__init__(default=default, required=required,
                                          **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
@@ -53,6 +59,26 @@ def run_command(cmd, debug=False):
         print(str.join(" ", cmd))
     else:
         sp.call(cmd)
+
+def memoize(f):
+    memo = {}
+    def helper(x):
+        if f not in memo:
+            memo[f] = f(x)
+        return memo[f]
+    return helper
+
+@memoize
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       user_id=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       project_domain_name='default')
+    sess = session.Session(auth=auth)
+    return sess
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -82,13 +108,18 @@ if __name__ == "__main__":
     parser.add_argument('--gmetric-tmax', type=int, default=1200, help="Value for option `--tmax` of gmetric command. Default: %(default)s")
     parser.add_argument('--gmetric-group', default="openstack", help="Value of option `--group` of gmetric command. Default: %(default)s")
     parser.add_argument('--silent', action='store_true', default=False, help='Ignore any error.')
-
+    parser.add_argument('--os-compute-api-version', default='1.1', choices=['1.1', '2'], help='Define compute api version to use. Please note that API version v2 assumes Keystone API version 3.')
     args = parser.parse_args()
 
-    nclient = nova_client.Client('1.1', args.os_username,
-                                 args.os_password,
-                                 args.os_tenant_name,
-                                 args.os_auth_url)
+    if args.os_compute_api_version == '1.1':
+        nclient = nova_client.Client('1.1', args.os_username,
+                                     args.os_password,
+                                     args.os_tenant_name,
+                                     args.os_auth_url)
+    else:
+        args.os_project_name = args.os_tenant_name
+        sess = make_session(args)
+        nclient = nova_client.Client('2', session=sess)
     all_vms = nclient.servers.list(search_opts={'all_tenants':True})
     flavors = { flv.id: flv for flv in nclient.flavors.list()}
 
@@ -96,7 +127,7 @@ if __name__ == "__main__":
         if not getattr(args, status):
             continue
         vms = [vm for vm in all_vms if vm.status.lower() == status]
-    
+
         cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
                "-x", str(args.gmetric_tmax),
                "-g", args.gmetric_group,
@@ -113,7 +144,7 @@ if __name__ == "__main__":
             else:
                 print("Error while running command '%s': %s" % (str.join(' ', cmd), err))
                 continue
-    
+
         if args.cores:
             cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
             cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
@@ -132,5 +163,3 @@ if __name__ == "__main__":
                 else:
                     print("Error while running command '%s': %s" % (str.join(' ', cmd), err))
                     continue
-
-    
