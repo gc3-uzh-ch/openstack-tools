@@ -54,7 +54,7 @@ class EnvDefault(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values)
 
-def run_command(cmd, debug=False):
+def run_command(cmd, debug=False):    
     if debug:
         print(str.join(" ", cmd))
     else:
@@ -104,9 +104,10 @@ if __name__ == "__main__":
     parser.add_argument('-c', '--cores', action="store_true", help="Also send the number of vCPUs")
 
     parser.add_argument('-g', '--gmetric', metavar='PATH', help="Path to gmetric. Default: %(default)s", default='/usr/bin/gmetric')
-    parser.add_argument('--gmetric-dmax', type=int, default=1200, help="Value for option `--dmax` of gmetric command. Default: %(default)s")
-    parser.add_argument('--gmetric-tmax', type=int, default=1200, help="Value for option `--tmax` of gmetric command. Default: %(default)s")
     parser.add_argument('--gmetric-group', default="openstack", help="Value of option `--group` of gmetric command. Default: %(default)s")
+    parser.add_argument('--gmetric-dmax', type=int, default=1200, help="Value for option `--dmax` of gmetric command. Default: %(default)s")
+    parser.add_argument('--max-vms', type=int, default=1200, help="Value for option `--tmax` of gmetric command. Default: %(default)s")
+    parser.add_argument('--max-vcpus', default=1200, help="Value of option `--group` of gmetric command. Default: %(default)s")
     parser.add_argument('--silent', action='store_true', default=False, help='Ignore any error.')
     parser.add_argument('--os-compute-api-version', default='1.1', choices=['1.1', '2'], help='Define compute api version to use. Please note that API version v2 assumes Keystone API version 3.')
     args = parser.parse_args()
@@ -123,13 +124,22 @@ if __name__ == "__main__":
     all_vms = nclient.servers.list(search_opts={'all_tenants':True})
     flavors = { flv.id: flv for flv in nclient.flavors.list()}
 
+    if args.os_compute_api_version != '1.1':
+        try:
+            # Get the total number of vcpus, if possible        
+            args.max_vcpus = nclient.hypervisors.statistics().vcpus
+            args.max_vms = args.max_vcpus * 24 # Sensible value, but totally made up :)
+        except:
+            pass
+                
+    
     for status in ['active', 'error', 'building', 'shutoff']:
         if not getattr(args, status):
             continue
         vms = [vm for vm in all_vms if vm.status.lower() == status]
 
         cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
-               "-x", str(args.gmetric_tmax),
+               "-x", str(args.max_vms),
                "-g", args.gmetric_group,
                "--name=VMs_%s" % status,
                "--value=%d" % len(vms),
@@ -148,7 +158,7 @@ if __name__ == "__main__":
         if args.cores:
             cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
             cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
-                   "-x", str(args.gmetric_tmax),
+                   "-x", str(args.max_vcpus),
                    "-g", args.gmetric_group,
                    "--name=VMs_%s_ncores" % status,
                    "--value=%d" % cores,
