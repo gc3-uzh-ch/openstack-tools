@@ -72,10 +72,11 @@ def memoize(f):
 def make_session(opts):
     """Create a Keystone session"""
     auth = v3.Password(auth_url=opts.os_auth_url,
-                       user_id=opts.os_username,
+                       username=opts.os_username,
                        password=opts.os_password,
                        project_name=opts.os_project_name,
-                       project_domain_name='default')
+                       user_domain_id=opts.os_user_domain_id,
+                       project_domain_id=opts.os_project_domain_id)
     sess = session.Session(auth=auth)
     return sess
 
@@ -127,7 +128,10 @@ def setup():
                         envvar="OS_AUTH_URL",
                         help='OpenStack auth url endpoint. If not supplied, the value of the '
                         '"OS_AUTH_URL" environment variable is used.')
-
+    parser.add_argument('--os-user-domain-id',
+                        action=EnvDefault)
+    parser.add_argument('--os-project-domain-id',
+                        action=EnvDefault)
     parser.add_argument('--send-mail',
                         action='store_true',
                         help='Send an email to contact_email and owner_email '
