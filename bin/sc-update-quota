@@ -1,0 +1,292 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""Tool to increase the quota of a project and keep track of the
+changes using a property in the project itself.
+"""
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import datetime
+import logging
+import os
+import prettytable
+import sys
+
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client as keystone_client
+from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+
+from novaclient import client as nova_client
+from cinderclient import client as cinder_client
+from neutronclient.v2_0 import client as neutron_client
+
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
+
+def memoize(f):
+    memo = {}
+    def helper(x):
+        if f not in memo:
+            memo[f] = f(x)
+        return memo[f]
+    return helper
+
+
+@memoize
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       username=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       user_domain_id=opts.os_user_domain_id,
+                       project_domain_id=opts.os_project_domain_id)
+    sess = session.Session(auth=auth)
+    return sess
+
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+def mktime(datestring):
+    return datetime.datetime.strptime(datestring, '%Y-%m-%d').strftime('%Y-%m-%d')
+
+def setup(argv=sys.argv[1:]):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+    parser.add_argument('--os-user-domain-id',
+                        default='default')
+    parser.add_argument('--os-project-domain-id',
+                        default='default')
+
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+    parser.add_argument('--date',
+                        type=mktime,
+                        default=datetime.date.today().strftime('%Y-%d-%m'),
+                        help="Date (YYYY-MM-DD) to be used as reference. Default: today's date (%(default)s)")
+
+    parser.add_argument('--property',
+                        default='quota_history',
+                        help='Project property to use to keep track of the changes.')
+
+    parser.add_argument('--v-gigabytes',
+                        type=int,
+                        help="Update CINDER quota in GB")
+    parser.add_argument('--v-volumes',
+                        type=int)
+    parser.add_argument('--v-volume-type')
+    parser.add_argument('--c-cores',
+                        type=int)
+    parser.add_argument('--c-ram',
+                        type=int)
+    parser.add_argument('--c-instances',
+                        type=int)
+    parser.add_argument('--n-network',
+                        type=int)
+    parser.add_argument('--n-subnet',
+                        type=int)
+    parser.add_argument('--n-floatingip',
+                        type=int)
+    parser.add_argument('--n-port',
+                        type=int)
+    parser.add_argument('--n-router',
+                        type=int)
+
+    parser.add_argument('project',
+                        help="Project to update")
+
+    opts = parser.parse_args(argv)
+
+    # Set verbosity
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
+    return opts
+
+
+def _update_quota(projectid, opts, names, client, servicename):
+    changelog = []
+    old_quota = client.quotas.get(projectid)
+    quota_update = {}
+
+    for name, option in names.items():
+        value = getattr(opts, option)
+        if not value:
+            continue
+        delta = value-getattr(old_quota, name)
+        if delta == 0:
+            log.info("Not updating `%s` quota for service %s. %s == %s",
+                     name, servicename, value, getattr(old_quota, name))
+            continue
+        quota_update[name] = value
+        strdelta = "+%d" % delta if delta>0 else "%d" % delta
+        changelog.append('%s: %d (%s)' % (name, value, strdelta))
+    # Update quota
+    # Update history
+    if quota_update:
+        client.quotas.update(projectid, **quota_update)
+        log.info("Updating %s quota. %s" % (servicename, str(quota_update)))
+        return '(%s) %s: %s\n' % (opts.date, servicename, str.join(', ', changelog))
+    else:
+        return ''
+
+def update_nova_quota(opts, project):
+    sess = make_session(opts)
+    client = nova_client.Client('2', session=sess)
+    quota_names = {
+        'cores': 'c_cores',
+        'ram': 'c_ram',
+        'instances': 'c_instances'
+    }
+    return _update_quota(project.id, opts, quota_names, client, 'NOVA')
+
+
+def update_cinder_quota(opts, project):
+    sess = make_session(opts)
+    client = cinder_client.Client('2', session=sess)
+    quota_names = {
+        'gigabytes': 'v_gigabytes',
+        'volumes': 'v_volumes'
+    }
+    return _update_quota(project.id, opts, quota_names, client, 'CINDER')
+
+
+def update_neutron_quota(opts, project):
+    sess = make_session(opts)
+    client = neutron_client.Client(session=sess)
+    # Neutron is a bit different, so we cannot use _update_quota
+    quota_names = {
+        'network': 'n_network',
+        'subnet': 'n_subnet',
+        'floatingip': 'n_floatingip',
+        'port': 'n_port',
+        'router': 'n_router'
+    }
+    servicename='NEUTRON'
+
+    # This is *similar* to _update_quota, but:
+    # * client.quotas.<update|get> is now client.<update|show>_quota
+    # * quota object is a dict (has items instead of attributes)
+    changelog = []
+    old_quota = client.show_quota(project.id)['quota']
+    quota_update = {}
+
+    for name, option in quota_names.items():
+        value = getattr(opts, option)
+        if not value:
+            continue
+        delta = value-old_quota[name]
+        if delta == 0:
+            log.info("Not updating `%s` quota for service %s. %s == %s",
+                     name, servicename, value, old_quota[name])
+            continue
+        quota_update[name] = value
+        strdelta = "+%d" % delta if delta>0 else "%d" % delta
+        changelog.append('%s: %d (%s)' % (name, value, strdelta))
+    # Update quota
+    # Update history
+    if quota_update:
+        client.update_quota(project.id, {'quota': quota_update})
+        log.info("Updating %s quota. %s" % (servicename, str(quota_update)))
+        return '(%s) %s: %s\n' % (opts.date, servicename, str.join(', ', changelog))
+    else:
+        return ''
+
+def main(opts):
+    # get project
+    sess = make_session(opts)
+    kclient = keystone_client.Client(session=sess)
+
+    try:
+        project = kclient.projects.find(name=opts.project)
+        log.debug("Project %s found: %s" % (opts.project, project.to_dict()))
+    except NotFound:
+        log.error("Project % not found." % opts.project)
+        return 1
+    # save log of quota updates
+    history = getattr(project, opts.property) if hasattr(project, opts.property) else ''
+
+    if history and history[-1] != '\n':
+        # Add a newline if not present, but only on the first entry
+        history += '\n'
+
+    old_history = history
+    # Get nova changes
+    update = update_nova_quota(opts, project)
+    if update:
+        history += update
+        print(update)
+
+    # Get cinder changes
+    update = update_cinder_quota(opts, project)
+    if update:
+        history += update
+        print(update)
+
+    # Get neutron changes
+    update = update_neutron_quota(opts, project)
+    if update:
+        history += update
+        print(update)
+
+    if old_history != history:
+        kclient.projects.update(project.id, **{opts.property: history})
+        print("Property `%s` for tenant %s updated." % (opts.property, project.name))
+    else:
+        print("Nothing to update")
+    return 0
+
+if __name__ == "__main__":
+    opts = setup()
+    sys.exit(main(opts))
