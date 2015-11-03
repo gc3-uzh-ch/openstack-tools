@@ -121,6 +121,9 @@ def setup(argv=sys.argv[1:]):
                         default='quota_history',
                         help='Project property to use to keep track of the changes.')
 
+    parser.add_argument('--msg',
+                        help='Add a message to the log entry')
+
     parser.add_argument('--v-gigabytes',
                         type=int,
                         help="Update CINDER quota in GB")
@@ -261,26 +264,31 @@ def main(opts):
         # Add a newline if not present, but only on the first entry
         history += '\n'
 
-    old_history = history
+    updates = ''
     # Get nova changes
     update = update_nova_quota(opts, project)
     if update:
-        history += update
-        print(update)
+        updates += update
+        print("Quota for nova updated.")
+        log.info(update)
 
     # Get cinder changes
     update = update_cinder_quota(opts, project)
     if update:
-        history += update
-        print(update)
+        updates += update
+        print("Quota for cinder updated.")
+        log.info(update)
 
     # Get neutron changes
     update = update_neutron_quota(opts, project)
     if update:
-        history += update
-        print(update)
+        updates += update
+        print("Quota for neutron updated.")
+        log.info(update)
 
-    if old_history != history:
+    if updates:
+        if opts.msg:
+            history = "%s(%s) %s\n%s" % (history, opts.date, opts.msg, updates)
         kclient.projects.update(project.id, **{opts.property: history.rstrip()})
         print("Property `%s` for tenant %s updated." % (opts.property, project.name))
     else:
