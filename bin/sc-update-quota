@@ -281,7 +281,7 @@ def main(opts):
         print(update)
 
     if old_history != history:
-        kclient.projects.update(project.id, **{opts.property: history})
+        kclient.projects.update(project.id, **{opts.property: history.rstrip()})
         print("Property `%s` for tenant %s updated." % (opts.property, project.name))
     else:
         print("Nothing to update")
