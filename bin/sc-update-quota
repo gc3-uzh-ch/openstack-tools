@@ -34,10 +34,11 @@ import sys
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
 from keystoneclient.v3 import client as keystone_client
-from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+import keystoneclient.openstack.common.apiclient.exceptions as kex
 
 from novaclient import client as nova_client
 from cinderclient import client as cinder_client
+import cinderclient.exceptions as cex
 from neutronclient.v2_0 import client as neutron_client
 
 log = logging.getLogger()
@@ -198,11 +199,23 @@ def update_nova_quota(opts, project):
 def update_cinder_quota(opts, project):
     sess = make_session(opts)
     client = cinder_client.Client('2', session=sess)
+    service = 'CINDER(global)'
     quota_names = {
         'gigabytes': 'v_gigabytes',
         'volumes': 'v_volumes'
     }
-    return _update_quota(project.id, opts, quota_names, client, 'CINDER')
+    if opts.v_volume_type:
+        # Update quota for a specific volume type only.
+        # check if the volume type exists
+        try:
+            client.volume_types.find(name=opts.v_volume_type)
+        except cex.NotFound:
+            log.error("Volume type %s not found." % opts.v_volume_type)
+            return ''
+        # convert key names
+        service = 'CINDER(type:%s)' % opts.v_volume_type
+        quota_names = dict(("%s_%s" % (k, opts.v_volume_type), v) for k,v in quota_names.items())
+    return _update_quota(project.id, opts, quota_names, client, service)
 
 
 def update_neutron_quota(opts, project):
@@ -254,7 +267,7 @@ def main(opts):
     try:
         project = kclient.projects.find(name=opts.project)
         log.debug("Project %s found: %s" % (opts.project, project.to_dict()))
-    except NotFound:
+    except kex.NotFound:
         log.error("Project % not found." % opts.project)
         return 1
     # save log of quota updates
