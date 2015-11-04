@@ -289,6 +289,8 @@ def main(opts):
     if updates:
         if opts.msg:
             history = "%s(%s) %s\n%s" % (history, opts.date, opts.msg, updates)
+        else:
+            history += updates
         kclient.projects.update(project.id, **{opts.property: history.rstrip()})
         print("Property `%s` for tenant %s updated." % (opts.property, project.name))
     else:
