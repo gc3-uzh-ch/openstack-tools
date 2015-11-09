@@ -129,9 +129,13 @@ def setup():
                         help='OpenStack auth url endpoint. If not supplied, the value of the '
                         '"OS_AUTH_URL" environment variable is used.')
     parser.add_argument('--os-user-domain-id',
-                        action=EnvDefault)
+                        action=EnvDefault,
+                        envvar="OS_USER_DOMAIN_ID",
+                        default='default')
     parser.add_argument('--os-project-domain-id',
-                        action=EnvDefault)
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_DOMAIN_ID",
+                        default='default')
     parser.add_argument('--send-mail',
                         action='store_true',
                         help='Send an email to contact_email and owner_email '
