@@ -1,0 +1,197 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""Tool to increase the quota of a project and keep track of the
+changes using a property in the project itself.
+"""
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import datetime
+from collections import defaultdict
+import logging
+import os
+import prettytable
+import sys
+
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client as keystone_client
+import keystoneclient.openstack.common.apiclient.exceptions as kex
+
+from novaclient import client as nova_client
+from cinderclient import client as cinder_client
+import cinderclient.exceptions as cex
+from neutronclient.v2_0 import client as neutron_client
+
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
+
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       username=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       user_domain_id=opts.os_user_domain_id,
+                       project_domain_id=opts.os_project_domain_id)
+    sess = session.Session(auth=auth)
+    return sess
+
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+def mktime(datestring):
+    return datetime.datetime.strptime(datestring, STD_DATE_FMT).strftime(STD_DATE_FMT)
+
+def setup(argv=sys.argv[1:]):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+    parser.add_argument('--os-user-domain-id',
+                        default='default')
+    parser.add_argument('--os-project-domain-id',
+                        default='default')
+    parser.add_argument('-f', '--format', choices=['text', 'csv', 'table'], default='table')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+    parser.add_argument('--project')
+    parser.add_argument('--user')
+    opts = parser.parse_args(argv)
+
+    # Set verbosity
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
+    return opts
+
+
+
+def main(opts):
+    # get project
+    sess = make_session(opts)
+    kclient = keystone_client.Client(session=sess)
+
+    roles = {r.id: r for r in kclient.roles.list()}
+
+    if opts.project:
+        projects = {p.id: p for p in kclient.projects.list(name=opts.project)}
+        role_assignment = kclient.role_assignments.list(project=projects.keys()[0])
+    else:
+        projects = {p.id: p for p in kclient.projects.list()}
+        if opts.user:
+            role_assignment = kclient.role_assignments.list(user=opts.user)
+        else:
+            role_assignment = kclient.role_assignments.list()
+
+    project_mapping = defaultdict(list)
+    user_mapping = defaultdict(list)
+
+    for role in role_assignment:
+        rolename = roles.get(role.role['id']).name
+        username = role.user['id']
+        project = projects.get(role.scope['project']['id']).name
+
+        user_mapping[username].append({'project': project,
+                                       'role': rolename})
+        project_mapping[project].append({'user': username,
+                                       'role': rolename})
+
+    return (user_mapping, project_mapping)
+
+def print_projects(project_mapping, opts):
+    if opts.format == 'text':
+        print_projects_text(project_mapping)
+    elif opts.format == 'table':
+        print_projects_table(project_mapping)
+
+def print_users(user_mapping, opts):
+    if opts.format == 'text':
+        print_users_text(user_mapping)
+    elif opts.format == 'table':
+        print_users_table(user_mapping)
+
+def print_projects_text(project_mapping):
+    for project, role in sorted(project_mapping.items()):
+        print("project: %s" % project)
+        for user in sorted(role):
+            print("  %s is %s" % (user['user'], user['role']))
+
+def print_projects_table(project_mapping):
+    pt = prettytable.PrettyTable(('Project', 'User', 'Role'))
+    pt.align['Project'] = 'l'
+    for project, role in sorted(project_mapping.items()):
+        for user in sorted(role):
+            pt.add_row([project, user['user'], user['role']])
+    print(pt)
+
+def print_users_text(user_mapping):
+    for user, projects in sorted(user_mapping.items()):
+        print(user)
+        for project in sorted(projects, key=lambda x: x['project']):
+            print("  %s (%s)" % (project['project'], project['role']))
+
+def print_users_table(user_mapping):
+    pt = prettytable.PrettyTable(('User', 'Project', 'Role'))
+    pt.align['User'] = 'l'
+    for user, projects in sorted(user_mapping.items()):
+        for project in sorted(projects, key=lambda x: x['project']):
+            pt.add_row([user, project['project'], project['role']])
+    print(pt)
+    
+if __name__ == "__main__":
+    opts = setup()
+    user_mapping, project_mapping = main(opts)
+    if opts.user:
+        print_projects(project_mapping, opts)
+    else:
+        print_users(user_mapping, opts)
+
