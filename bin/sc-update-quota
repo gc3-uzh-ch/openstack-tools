@@ -83,8 +83,27 @@ class EnvDefault(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values)
 
+
 def mktime(datestring):
     return datetime.datetime.strptime(datestring, STD_DATE_FMT).strftime(STD_DATE_FMT)
+
+def check_signed_int(value):
+    op = str(value)[0]
+    if op in ('+', '-'):
+        func = lambda x, y: x+y
+    elif op == '=':
+        value = value[1:]
+        func = lambda x, y: y
+    else:
+        func = lambda x, y: y
+
+    try:
+        ivalue = int(value)
+    except:
+        raise argparse.ArgumentTypeError("invalid int value '%s'" % value)
+
+    return func, ivalue
+
 
 def setup(argv=sys.argv[1:]):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -128,27 +147,27 @@ def setup(argv=sys.argv[1:]):
                         help='Add a message to the log entry')
 
     parser.add_argument('--v-gigabytes',
-                        type=int,
+                        type=check_signed_int,
                         help="Update CINDER quota in GB")
     parser.add_argument('--v-volumes',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--v-volume-type')
     parser.add_argument('--c-cores',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--c-ram',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--c-instances',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--n-network',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--n-subnet',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--n-floatingip',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--n-port',
-                        type=int)
+                        type=check_signed_int)
     parser.add_argument('--n-router',
-                        type=int)
+                        type=check_signed_int)
 
     parser.add_argument('project',
                         help="Project to update")
@@ -167,17 +186,19 @@ def _update_quota(projectid, opts, names, client, servicename):
     quota_update = {}
 
     for name, option in names.items():
-        value = getattr(opts, option)
-        if not value:
-            continue
-        delta = value-getattr(old_quota, name)
+        if not getattr(opts, option): continue
+        opt, value = getattr(opts, option)
+
+        oldvalue = getattr(old_quota, name)
+        newvalue = opt(oldvalue, value)
+        delta = newvalue-oldvalue
         if delta == 0:
             log.info("Not updating `%s` quota for service %s. %s == %s",
                      name, servicename, value, getattr(old_quota, name))
             continue
-        quota_update[name] = value
+        quota_update[name] = newvalue
         strdelta = "+%d" % delta if delta>0 else "%d" % delta
-        changelog.append('%s: %d (%s)' % (name, value, strdelta))
+        changelog.append('%s: %d (%s)' % (name, newvalue, strdelta))
     # Update quota
     # Update history
     if quota_update:
@@ -310,6 +331,7 @@ def main(opts):
         print("Property `%s` for tenant %s updated." % (opts.property, project.name))
     else:
         print("Nothing to update")
+
     return 0
 
 if __name__ == "__main__":
