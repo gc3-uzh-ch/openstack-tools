@@ -116,9 +116,11 @@ def setup():
                         '--verbose',
                         action='count', default=0,
                         help='Increase verbosity')
+
     parser.add_argument('-d',
                         '--description',
                         help="Project description")
+
     parser.add_argument('-c',
                         '--contact',
                         required=True,
@@ -127,6 +129,7 @@ def setup():
                         '--contact-email',
                         required=True,
                         help='Email of the technical contact for this project.')
+
     parser.add_argument('-o',
                         '--owner',
                         required=True,
@@ -135,12 +138,22 @@ def setup():
                         '--owner-email',
                         required=True,
                         help='Email address of the owner of the project.')
-    parser.add_argument('name', help='Name of the project')
+
+    parser.add_argument('-s',
+                        '--s3it-owner',
+                        required=True,
+                        help='Full name of the S3IT Project Owner.')
+    parser.add_argument('-S',
+                        '--s3it-owner-email',
+                        required=True,
+                        help='Email address of the S3IT Project Owner.')
 
     parser.add_argument('--no-verify-email',
                         action='store_true',
                         help='Do not attempt to verify that email addresses '
                         'are deliverable.')
+
+    parser.add_argument('name', help='Name of the project')
 
     opts = parser.parse_args()
     verbosity = max(0, 3-opts.verbose) * 10
@@ -179,7 +192,9 @@ def create_project(opts, sess):
                                        contact=opts.contact,
                                        contact_email=opts.contact_email,
                                        owner=opts.owner,
-                                       owner_email=opts.owner_email)
+                                       owner_email=opts.owner_email,
+                                       s3it_owner=opts.s3it_owner,
+                                       s3it_owner_email=opts.s3it_owner_email)
 
     print("Adding current user (%s) to tenant %s" % (opts.os_username, opts.name))
     # Note: this works because in ourcase userid == username
@@ -250,6 +265,9 @@ def main(opts):
         sys.exit(1)
     elif not verify_email_address(opts.contact_email, opts.mail_from, skip_delivery_check=opts.no_verify_email):
         print("Wrong email address %s for option --contact-email" % opts.contact_email)
+        sys.exit(1)
+    elif not verify_email_address(opts.s3it_owner_email, opts.mail_from, skip_delivery_check=opts.no_verify_email):
+        print("Wrong email address %s for option --sc-owner-email" % opts.s3it_owner_email)
         sys.exit(1)
 
     sess = make_session(opts)
