@@ -388,7 +388,8 @@ def main(opts):
             try:
                 pdict = projects.get(project_id).to_dict()
                 recipients = set([pdict.get('contact_email'),
-                                  pdict.get('owner_email')])
+                                  pdict.get('owner_email'),
+                                  pdict.get('s3it_owner_email')])
             except Exception as ex:
                 log.error("Error getting recipients address from project id %s" % project_id)
                 continue
