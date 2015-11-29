@@ -291,7 +291,7 @@ def main(opts):
         project = kclient.projects.find(name=opts.project)
         log.debug("Project %s found: %s" % (opts.project, project.to_dict()))
     except kex.NotFound:
-        log.error("Project % not found." % opts.project)
+        log.error("Project %s not found." % opts.project)
         return 1
     # save log of quota updates
     history = getattr(project, opts.property) if hasattr(project, opts.property) else ''
