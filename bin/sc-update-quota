@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-#
 #
 #
-# Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
+# Copyright (C) 2015, 2016, S3IT, University of Zurich. All rights reserved.
 #
 #
 # This program is free software; you can redistribute it and/or modify it
@@ -155,7 +155,8 @@ def setup(argv=sys.argv[1:]):
     parser.add_argument('--c-cores',
                         type=check_signed_int)
     parser.add_argument('--c-ram',
-                        type=check_signed_int)
+                        type=check_signed_int,
+                        help="New total amount of RAM in MB")
     parser.add_argument('--c-instances',
                         type=check_signed_int)
     parser.add_argument('--n-network',
