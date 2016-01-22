@@ -286,6 +286,14 @@ def update_neutron_quota(opts, project):
         return ''
 
 def main(opts):
+    # warn if not using the OS v3 API endpoint
+    if not opts.os_auth_url.endswith('/v3'):
+        log.warning(
+            "This program needs to use the Keystone API v3,"
+            " but the OS_AUTH_URL endpoint does not look like it's v3."
+            " A good value for UZH ScienceCloud would be:"
+            " `export OS_AUTH_URL=https://cloud.s3it.uzh.ch:35357/v3`")
+
     # get project
     sess = make_session(opts)
     kclient = keystone_client.Client(session=sess)
