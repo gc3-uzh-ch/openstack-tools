@@ -262,10 +262,12 @@ def update_neutron_quota(opts, project):
     quota_update = {}
 
     for name, option in quota_names.items():
-        value = getattr(opts, option)
-        if not value:
-            continue
-        delta = value-old_quota[name]
+        if not getattr(opts, option): continue
+        opt, value = getattr(opts, option)
+
+        oldvalue = old_quota[name]
+        newvalue = opt(oldvalue, value)
+        delta = newvalue-oldvalue
         if delta == 0:
             log.info("Not updating `%s` quota for service %s. %s == %s",
                      name, servicename, value, old_quota[name])
