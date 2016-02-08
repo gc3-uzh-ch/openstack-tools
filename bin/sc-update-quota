@@ -217,6 +217,22 @@ def update_nova_quota(opts, project):
         'ram': 'c_ram',
         'instances': 'c_instances'
     }
+
+    if opts.c_instances:
+        # we need to ensure that the number of neutron ports is at least equal to the number of instances.
+        # Cfr. https://www.s3it.uzh.ch/help/issue2009
+        
+        if opts.n_port:
+            nports = opts.n_port[1]
+        else:
+            nclient = neutron_client.Client(session=sess)
+            nquota = nclient.show_quota(project.id)['quota']
+            nports = nquota['port']
+        if opts.c_instances[1] > nports:
+            raise ValueError(
+                "Quota for neutron ports (--n-ports) should be at least equal "
+                "to the number of instances (--c-instances). Please re-run with "
+                "--n-port N with N > %d" % opts.c_instances[1])
     return _update_quota(project.id, opts, quota_names, client, 'NOVA')
 
 
@@ -313,36 +329,39 @@ def main(opts):
 
     updates = ''
     # Get nova changes
-    update = update_nova_quota(opts, project)
-    if update:
-        updates += update
-        print("Quota for nova updated.")
-        log.info(update)
+    try:
+        update = update_nova_quota(opts, project)
+        if update:
+            updates += update
+            print("Quota for nova updated.")
+            log.info(update)
 
-    # Get cinder changes
-    update = update_cinder_quota(opts, project)
-    if update:
-        updates += update
-        print("Quota for cinder updated.")
-        log.info(update)
+        # Get cinder changes
+        update = update_cinder_quota(opts, project)
+        if update:
+            updates += update
+            print("Quota for cinder updated.")
+            log.info(update)
 
-    # Get neutron changes
-    update = update_neutron_quota(opts, project)
-    if update:
-        updates += update
-        print("Quota for neutron updated.")
-        log.info(update)
+        # Get neutron changes
+        update = update_neutron_quota(opts, project)
+        if update:
+            updates += update
+            print("Quota for neutron updated.")
+            log.info(update)
 
-    if updates:
-        if opts.msg:
-            history = "%s(%s) %s\n%s" % (history, opts.date, opts.msg, updates)
+        if updates:
+            if opts.msg:
+                history = "%s(%s) %s\n%s" % (history, opts.date, opts.msg, updates)
+            else:
+                history += updates
+            kclient.projects.update(project.id, **{opts.property: history.rstrip()})
+            print("Property `%s` for tenant %s updated." % (opts.property, project.name))
         else:
-            history += updates
-        kclient.projects.update(project.id, **{opts.property: history.rstrip()})
-        print("Property `%s` for tenant %s updated." % (opts.property, project.name))
-    else:
-        print("Nothing to update")
-
+            print("Nothing to update")
+    except Exception as ex:
+        # TODO: Proper error checking
+        log.error("Unable to update quotas: %s" % ex)
     return 0
 
 if __name__ == "__main__":
