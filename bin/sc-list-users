@@ -46,6 +46,14 @@ from neutronclient.v2_0 import client as neutron_client
 log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
 
+class ProjectNotFound(Exception):
+    pass
+
+
+class UserNotFound(Exception):
+    pass
+
+
 def make_session(opts):
     """Create a Keystone session"""
     auth = v3.Password(auth_url=opts.os_auth_url,
@@ -112,7 +120,7 @@ def setup(argv=sys.argv[1:]):
     # Set verbosity
     verbosity = max(0, 3-opts.verbose) * 10
     log.setLevel(verbosity)
-    return opts
+    return (opts, parser)
 
 
 
@@ -125,10 +133,17 @@ def main(opts):
 
     if opts.project:
         projects = {p.id: p for p in kclient.projects.list(name=opts.project)}
+        if not projects:
+            raise ProjectNotFound("No project found with name %s" % opts.project)
         role_assignment = kclient.role_assignments.list(project=projects.keys()[0])
     else:
         projects = {p.id: p for p in kclient.projects.list()}
         if opts.user:
+            # Check if user is present
+            try:
+                kclient.users.get(opts.user)
+            except Exception:
+                raise UserNotFound("No user found with name %s" % opts.user)
             role_assignment = kclient.role_assignments.list(user=opts.user)
         else:
             role_assignment = kclient.role_assignments.list()
@@ -205,10 +220,14 @@ def print_users_csv(user_mapping):
     for user, projects in sorted(user_mapping.items()):
         for project in sorted(projects, key=lambda x: x['project']):
             writer.writerow([user, project['project'], project['role']])
-    
+
 if __name__ == "__main__":
-    opts = setup()
-    user_mapping, project_mapping = main(opts)
+    (opts, parser) = setup()
+    try:
+        user_mapping, project_mapping = main(opts)
+    except (ProjectNotFound, UserNotFound) as ex:
+        parser.error(ex)
+
     if opts.user:
         print_projects(project_mapping, opts)
     else:
