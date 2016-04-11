@@ -163,6 +163,8 @@ def setup(argv=sys.argv[1:]):
                         type=check_signed_int)
     parser.add_argument('--n-subnet',
                         type=check_signed_int)
+    parser.add_argument('--n-secgroup',
+                        type=check_signed_int)
     parser.add_argument('--n-floatingip',
                         type=check_signed_int)
     parser.add_argument('--n-port',
@@ -221,7 +223,7 @@ def update_nova_quota(opts, project):
     if opts.c_instances:
         # we need to ensure that the number of neutron ports is at least equal to the number of instances.
         # Cfr. https://www.s3it.uzh.ch/help/issue2009
-        
+
         if opts.n_port:
             nports = opts.n_port[1]
         else:
@@ -267,7 +269,8 @@ def update_neutron_quota(opts, project):
         'subnet': 'n_subnet',
         'floatingip': 'n_floatingip',
         'port': 'n_port',
-        'router': 'n_router'
+        'router': 'n_router',
+        'security_group': 'n_secgroup',
     }
     servicename='NEUTRON'
 
