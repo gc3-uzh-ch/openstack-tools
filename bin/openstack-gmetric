@@ -26,6 +26,7 @@ __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 # Sends metric data to a gmond daemon
 
 import argparse
+import logging
 import os
 import subprocess as sp
 import sys
@@ -38,6 +39,10 @@ except ImportError:
     pass
 
 from novaclient import client as nova_client
+
+
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
 
 class EnvDefault(argparse.Action):
     # This is took from
@@ -110,7 +115,14 @@ if __name__ == "__main__":
     parser.add_argument('--max-vcpus', default=1200, help="Value of option `--group` of gmetric command. Default: %(default)s")
     parser.add_argument('--silent', action='store_true', default=False, help='Ignore any error.')
     parser.add_argument('--os-compute-api-version', default='1.1', choices=['1.1', '2'], help='Define compute api version to use. Please note that API version v2 assumes Keystone API version 3.')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+
     args = parser.parse_args()
+
+    # Set verbosity
+    verbosity = max(0, 3-args.verbose) * 10
+    log.setLevel(verbosity)
 
     if args.os_compute_api_version == '1.1':
         nclient = nova_client.Client('1.1', args.os_username,
@@ -122,8 +134,7 @@ if __name__ == "__main__":
         sess = make_session(args)
         nclient = nova_client.Client('2', session=sess)
     all_vms = nclient.servers.list(search_opts={'all_tenants':True})
-    flavors = { flv.id: flv for flv in nclient.flavors.list()}
-
+    flavors = { flv.id: flv for flv in nclient.flavors.list(is_public=None)}
     if args.os_compute_api_version != '1.1':
         try:
             # Get the total number of vcpus, if possible        
@@ -156,7 +167,11 @@ if __name__ == "__main__":
                 continue
 
         if args.cores:
-            cores = sum(flavors[vm.flavor['id']].vcpus for vm in vms)
+            cores = 0
+            for vm in vms:
+                fid = vm.flavor['id']
+                if fid in flavors:
+                    cores += flavors[fid].vcpus
             cmd = [args.gmetric, "-d", str(args.gmetric_dmax),
                    "-x", str(args.max_vcpus),
                    "-g", args.gmetric_group,
