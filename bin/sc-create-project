@@ -35,6 +35,7 @@ import sys
 import logging
 import re
 import smtplib
+import time
 
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
@@ -185,6 +186,7 @@ def create_project(opts, sess):
         raise ProjectExists
 
     # Create the project
+    asciinow = time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(time.time()))
     project = keystone.projects.create(name=opts.name,
                                        domain='default',
                                        description=opts.description,
@@ -194,7 +196,8 @@ def create_project(opts, sess):
                                        owner=opts.owner,
                                        owner_email=opts.owner_email,
                                        s3it_owner=opts.s3it_owner,
-                                       s3it_owner_email=opts.s3it_owner_email)
+                                       s3it_owner_email=opts.s3it_owner_email,
+                                       created=asciinow)
 
     print("Adding current user (%s) to tenant %s" % (opts.os_username, opts.name))
     # Note: this works because in ourcase userid == username
