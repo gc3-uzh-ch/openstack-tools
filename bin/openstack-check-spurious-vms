@@ -41,28 +41,94 @@ import re
 import multiprocessing as mp
 import subprocess
 import sys
+import logging
+import os
+import time
 
-from nova import db
-from nova import context
-from nova import flags
-from nova.compute import instance_types
-from nova.openstack.common import cfg
-from nova.openstack.common import log as logging
+from keystoneclient import session
+from keystoneclient.auth.identity import v3
 
-logging.setup("nova")
-log = logging.getLogger("nova")
-verbose = 0
+from novaclient import client as nova_client
 
-FLAGS = flags.FLAGS
-args = flags.parse_args(['openstack_free_usage'])
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
 
-def debug(*args):
-    if verbose > 1:
-        print(*args)
+def memoize(f):
+    memo = {}
+    def helper(x):
+        if f not in memo:
+            memo[f] = f(x)
+        return memo[f]
+    return helper
 
-def info(*args):
-    if verbose > 0:
-        print(*args)
+
+@memoize
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       username=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       user_domain_id=opts.os_user_domain_id,
+                       project_domain_id=opts.os_project_domain_id)
+    sess = session.Session(auth=auth)
+    return sess
+
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+
+def setup(argv=sys.argv[1:]):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+    parser.add_argument('--os-user-domain-id',
+                        default='default')
+    parser.add_argument('--os-project-domain-id',
+                        default='default')
+
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+    parser.add_argument('-k', '--kill', help='Kill spurious virtual machines', default=False, action="store_true")
+    parser.add_argument('sshopts', nargs='*', help="ssh options.")
+    opts = parser.parse_args(argv)
+
+    # Set verbosity
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
+    return opts
+
 
 class RunVirsh(mp.Process):
     def __init__(self, host, sshopts, queue):
@@ -73,12 +139,12 @@ class RunVirsh(mp.Process):
 
     def run(self):
         cmd = str.join(' ', self._args)
-        debug("Executing command `%s`" % cmd)
+        log.debug("Executing command `%s`" % cmd)
         pipe = subprocess.Popen(self._args, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)
         stdout, stderr = pipe.communicate()
         ret = pipe.returncode
-        debug("Command %s exited with status %d" % (cmd, ret))
+        log.debug("Command %s exited with status %d and output '%s'" % (cmd, ret, stdout))
         self.queue.put((ret, self.host, stdout, stderr))
 
 
@@ -108,77 +174,88 @@ def maybe_kill_instance(kill, host, sshopts, vmid):
     to run to destroy the instance.
     """
     cmd = ['ssh'] + sshopts + [host, 'virsh', 'destroy', str(vmid)]
-    if not kill:
-        print(str.join(' ', cmd))
+    if True or not kill:
+        log.info(str.join(' ', cmd))
         return 0
     else:
-        info("Executing command `%s`" % cmd)
+        log.info("Executing command `%s`" % cmd)
         pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)
         stdout, stderr = pipe.communicate()
         retcodes.append(pipe.returncode)
         if pipe.returncode != 0:
-            print("Error running command %s" % (cmd))
-            print("Command return code: %d, stderr: %s" % (pipe.returncode, stderr))
+            log.error("Error running command %s" % (cmd))
+            log.info("Command return code: %d, stderr: %s" % (pipe.returncode, stderr))
         return pipe.returncode
 
-def main(args):
-    ctxt = context.get_admin_context()
-    instances = db.instance_get_all(ctxt)
+def main(opts):
+    sess = make_session(opts)
+    client = nova_client.Client('2', session=sess)
 
-    # Get a list of all running instances
-    instances_by_hosts = defaultdict(list)
-    for instance in instances:
-        host = instance.host[:instance.host.find('.')]
-        instances_by_hosts[instance.host].append(instance.id)
+    # Get all instances
+    vms = client.servers.list(search_opts={'all_tenants': 'True'})
+    vms_by_id = {getattr(i, 'OS-EXT-SRV-ATTR:instance_name'): i for i in vms}
+    instances_by_host = defaultdict(list)
+    for vm in vms:
+        host = getattr(vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
+        instances_by_host[host].append(vm)
 
-    # Get a list of all the compute nodes
-    compute_nodes = []
-    for s in db.service_get_all(ctxt):
-        if not s.disabled:
-            compute_nodes.extend(s.compute_node)
-
-    # Get a list of all the vms running on each compute node
+    # Get all compute nodes.
+    compute_nodes = [i for i in client.services.list() if i.binary == 'nova-compute']
     vms_on_host = {}
     queue = mp.Queue()
     jobs = []
-    for node in compute_nodes:
-        hostname = node.hypervisor_hostname
-        job = RunVirsh(hostname, args.sshopts, queue)
+    log.debug("Spanwing %d jobs: %s", len(compute_nodes), str.join(', ', sorted([i.host for i in compute_nodes])))
+    idx = 0
+    for node in sorted(compute_nodes, key=lambda x: x.host):
+        host = node.host
+        job = RunVirsh(host, opts.sshopts, queue)
         jobs.append(job)
         job.start()
+        # FIXME: this is not the right way: we should use a pool of
+        # processes to avoid spawning too many processes.
+        idx += 1
+        if idx % 15 == 0:
+            time.sleep(5)
+            
 
-    # Wait until all of them are done.
-    print("Waiting until all the jobs are done")
+    log.info("Waiting 20s until all the jobs are done")
+    time.sleep(20)
     for job in jobs:
-        job.join()
+        log.debug("Waiting for job %s to join (host %s)", job.name, job.host)
+        job.join(timeout=1)
+        log.debug("Job %s joined" % job.name)
+        job.terminate()
 
+    log.info("All jobs ended (more or less)")
     while not queue.empty():
         (ret, host, stdout, stderr) = queue.get()
 
         if ret != 0:
-            print("Error `%d` on host %s: %s" % (ret,
+            log.error("Error `%d` on host %s: %s" % (ret,
                                                  host,
                                                  stderr))
         else:
             vms_on_host[host] = parse_virsh_output(stdout)
-            debug("host %s: %d instances" % (host, len(vms_on_host[host])))
+            log.debug("host %s: %d instances" % (host, len(vms_on_host[host])))
 
-    for host, vms in vms_on_host.items():
-        shorthost = host[:host.find('.')]
-        for vm in vms:
-            vmid = vm['nova_id']
-            if vmid not in instances_by_hosts[host] and \
-              vmid not in instances_by_hosts[shorthost]:
-                maybe_kill_instance(args.kill, host, args.sshopts, vm.get('id'))
-
-
+    try:
+        for host, vms in vms_on_host.items():
+            shorthost = host[:host.find('.')]
+            for vm in vms:
+                vmid = vm['name']
+                instbyhost = instances_by_host[host] + instances_by_host[shorthost]
+                if vmid not in [getattr(i, 'OS-EXT-SRV-ATTR:instance_name') for i in instbyhost]:
+                    maybe_kill_instance(opts.kill, host, opts.sshopts, vm.get('name'))
+                    nova_vm = vms_by_id.get(vmid)
+                    if nova_vm:
+                        log.error("Instance %s (%s) should run on %s but it's running on %s instead",
+                                  nova_vm.id, vmid, host, getattr(nova_vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname'))
+                    else:
+                        log.error("Instance name %s not found", vmid)
+    except Exception as ex:
+        import pdb; pdb.set_trace()
+    
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-v', '--verbose', help="Increase verbosity.", action="count", default=0)
-    parser.add_argument('-k', '--kill', help='Kill spurious virtual machines', default=False, action="store_true")
-    parser.add_argument('sshopts', nargs='*', help="ssh options.")
-    args = parser.parse_args()
-    verbose = args.verbose
-    sys.argv = ['openstack_check_spurious_vms']
-    main(args)
+    opts = setup()
+    main(opts)
