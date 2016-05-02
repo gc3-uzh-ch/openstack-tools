@@ -85,6 +85,8 @@ def send_mail_to(smtp, mailfrom, to, subject, msg):
     msg['Subject'] = subject
     msg['From'] = mailfrom
     msg['To'] = to
+    msg['Auto-Submitted'] = 'auto-generated'
+    msg['Precedence'] = 'bulk'
 
     s = smtplib.SMTP(smtp)
     log.info("Sending email to %s with subject \"%s\"", to, subject)
