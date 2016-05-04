@@ -292,9 +292,10 @@ def update_neutron_quota(opts, project):
             log.info("Not updating `%s` quota for service %s. %s == %s",
                      name, servicename, value, old_quota[name])
             continue
-        quota_update[name] = value
+        quota_update[name] = newvalue
         strdelta = "+%d" % delta if delta>0 else "%d" % delta
         changelog.append('%s: %d (%s)' % (name, value, strdelta))
+
     # Update quota
     # Update history
     if quota_update:
