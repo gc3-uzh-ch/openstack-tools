@@ -44,6 +44,7 @@ import sys
 import logging
 import os
 import time
+import shlex
 
 from keystoneclient import session
 from keystoneclient.auth.identity import v3
@@ -132,7 +133,7 @@ def setup(argv=sys.argv[1:]):
 
 class RunVirsh(mp.Process):
     def __init__(self, host, sshopts, queue):
-        cmd = ['ssh'] + sshopts + [host, 'virsh', 'list']
+        cmd = ['ssh'] + sshopts + [host, 'virsh', 'list', '--all']
         mp.Process.__init__(self, args=cmd)
         self.host = host
         self.queue = queue
@@ -155,7 +156,7 @@ def parse_virsh_output(output):
     @returns a list of tuple (`id`, `name`) containing id and names of
     all the running instances.
     """
-    vm_re = re.compile(' *(?P<id>[0-9]+) +(?P<name>[^ ]+) +(running|idle|paused|shutdown|shut off|crashed|dying|pmsuspended)')
+    vm_re = re.compile(' *(?P<id>[0-9-]+) +(?P<name>[^ ]+) +(running|idle|paused|shutdown|shut off|crashed|dying|pmsuspended)')
     instances = []
     for line in output.splitlines():
         match = vm_re.match(line)
@@ -167,14 +168,13 @@ def parse_virsh_output(output):
                               'nova_id': hexid})
     return instances
 
-def maybe_kill_instance(kill, host, sshopts, vmid):
-    """
-    SSh to `host` using ssh options `sshopts` and kill the VM with id
-    `vmid` unless `dryrun` is `False`, otherwise print the ssh command
-    to run to destroy the instance.
-    """
-    cmd = ['ssh'] + sshopts + [host, 'virsh', 'destroy', str(vmid)]
-    if True or not kill:
+
+def maybe_run_remote_command(cmd, host, sshopts, dry_run=True):
+    if not isinstance(cmd, list):
+        cmd = shlex.split(cmd)
+    if not dry_run:
+        print("WARNING YOU ARE KILLING EVERYTHING")
+    if dry_run:
         log.info(str.join(' ', cmd))
         return 0
     else:
@@ -187,6 +187,28 @@ def maybe_kill_instance(kill, host, sshopts, vmid):
             log.error("Error running command %s" % (cmd))
             log.info("Command return code: %d, stderr: %s" % (pipe.returncode, stderr))
         return pipe.returncode
+    
+def maybe_kill_instance(kill, host, sshopts, vmid):
+    """
+    SSh to `host` using ssh options `sshopts` and kill the VM with id
+    `vmid` unless `dryrun` is `False`, otherwise print the ssh command
+    to run to destroy the instance.
+    """
+    cmd = ['ssh'] + sshopts + [host, 'virsh', 'destroy', str(vmid)]
+    dry_run = not kill
+    return maybe_run_remote_command(cmd, host, sshopts, dry_run=dry_run)
+
+
+def maybe_undefine_instance(kill, host, sshopts, vmid):
+    """
+    SSh to `host` using ssh options `sshopts` and kill the VM with id
+    `vmid` unless `dryrun` is `False`, otherwise print the ssh command
+    to run to destroy the instance.
+    """
+    cmd = ['ssh'] + sshopts + [host, 'virsh', 'undefine', str(vmid)]
+    dry_run = not kill
+    return maybe_run_remote_command(cmd, host, sshopts, dry_run=dry_run)
+
 
 def main(opts):
     sess = make_session(opts)
@@ -217,7 +239,7 @@ def main(opts):
         idx += 1
         if idx % 15 == 0:
             time.sleep(5)
-            
+
 
     log.info("Waiting 20s until all the jobs are done")
     time.sleep(20)
@@ -247,15 +269,22 @@ def main(opts):
                 instbyhost = instances_by_host[host] + instances_by_host[shorthost]
                 if vmid not in [getattr(i, 'OS-EXT-SRV-ATTR:instance_name') for i in instbyhost]:
                     maybe_kill_instance(opts.kill, host, opts.sshopts, vm.get('name'))
+                    maybe_undefine_instance(opts.kill, host, opts.sshopts, vm.get('name'))
                     nova_vm = vms_by_id.get(vmid)
                     if nova_vm:
+                        # Maybe add a check if the instance is
+                        # migrating. During live migration, you have
+                        # two instances with the same name, one
+                        # (active) on the source host, and the other
+                        # (paused) on the destination host.
                         log.error("Instance %s (%s) should run on %s but it's running on %s instead",
                                   nova_vm.id, vmid, host, getattr(nova_vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname'))
                     else:
-                        log.error("Instance name %s not found", vmid)
+                        log.error("Instance name %s running on %s but not found in database", vmid, host)
     except Exception as ex:
+        raise
         import pdb; pdb.set_trace()
-    
+
 if __name__ == "__main__":
     opts = setup()
     main(opts)
