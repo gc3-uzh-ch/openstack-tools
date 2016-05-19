@@ -285,6 +285,7 @@ def main(opts):
                             maybe_undefine_instance(opts.kill, host, opts.sshopts, vm.get('name'))
                         else:
                             maybe_kill_instance(opts.kill, host, opts.sshopts, vm.get('name'))
+                            maybe_undefine_instance(opts.kill, host, opts.sshopts, vm.get('name'))
     except Exception as ex:
         raise
         import pdb; pdb.set_trace()
