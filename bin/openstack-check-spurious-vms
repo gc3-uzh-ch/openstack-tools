@@ -162,10 +162,9 @@ def parse_virsh_output(output):
         match = vm_re.match(line)
         if match:
             name = match.group('name')
-            state = match.group('state')
             hexid = int(name[name.rfind('-')+1:], 16)
             instances.append({'id':match.group('id'),
-                              'name': match.group('name'),
+                              'name': name,
                               'state': match.group('state'),
                               'nova_id': hexid})
     return instances
@@ -189,7 +188,7 @@ def maybe_run_remote_command(cmd, host, sshopts, dry_run=True):
             log.error("Error running command %s" % (cmd))
             log.info("Command return code: %d, stderr: %s" % (pipe.returncode, stderr))
         return pipe.returncode
-    
+
 def maybe_kill_instance(kill, host, sshopts, vmid):
     """
     SSh to `host` using ssh options `sshopts` and kill the VM with id
