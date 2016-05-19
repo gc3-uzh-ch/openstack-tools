@@ -156,15 +156,17 @@ def parse_virsh_output(output):
     @returns a list of tuple (`id`, `name`) containing id and names of
     all the running instances.
     """
-    vm_re = re.compile(' *(?P<id>[0-9-]+) +(?P<name>[^ ]+) +(running|idle|paused|shutdown|shut off|crashed|dying|pmsuspended)')
+    vm_re = re.compile(' *(?P<id>[0-9-]+) +(?P<name>[^ ]+) +(?P<state>[running|idle|paused|shutdown|shut off|crashed|dying|pmsuspended]+)')
     instances = []
     for line in output.splitlines():
         match = vm_re.match(line)
         if match:
             name = match.group('name')
+            state = match.group('state')
             hexid = int(name[name.rfind('-')+1:], 16)
             instances.append({'id':match.group('id'),
                               'name': match.group('name'),
+                              'state': match.group('state'),
                               'nova_id': hexid})
     return instances
 
@@ -266,10 +268,9 @@ def main(opts):
             shorthost = host[:host.find('.')]
             for vm in vms:
                 vmid = vm['name']
+                vmstate = vm['state']
                 instbyhost = instances_by_host[host] + instances_by_host[shorthost]
                 if vmid not in [getattr(i, 'OS-EXT-SRV-ATTR:instance_name') for i in instbyhost]:
-                    maybe_kill_instance(opts.kill, host, opts.sshopts, vm.get('name'))
-                    maybe_undefine_instance(opts.kill, host, opts.sshopts, vm.get('name'))
                     nova_vm = vms_by_id.get(vmid)
                     if nova_vm:
                         # Maybe add a check if the instance is
@@ -280,7 +281,11 @@ def main(opts):
                         log.error("Instance %s (%s) should run on %s but it's running on %s instead",
                                   nova_vm.id, vmid, host, getattr(nova_vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname'))
                     else:
-                        log.error("Instance name %s running on %s but not found in database", vmid, host)
+                        log.error("Instance name %s %s on %s but not found in database", vmid, vmstate, host)
+                        if vmstate == "shut off":
+                            maybe_undefine_instance(opts.kill, host, opts.sshopts, vm.get('name'))
+                        else:
+                            maybe_kill_instance(opts.kill, host, opts.sshopts, vm.get('name'))
     except Exception as ex:
         raise
         import pdb; pdb.set_trace()
