@@ -232,7 +232,7 @@ def update_nova_quota(opts, project):
             nports = nquota['port']
         if opts.c_instances[1] > nports:
             raise ValueError(
-                "Quota for neutron ports (--n-ports) should be at least equal "
+                "Quota for neutron ports (--n-port) should be at least equal "
                 "to the number of instances (--c-instances). Please re-run with "
                 "--n-port N with N > %d" % opts.c_instances[1])
     return _update_quota(project.id, opts, quota_names, client, 'NOVA')
