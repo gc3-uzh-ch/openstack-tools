@@ -44,6 +44,8 @@ from keystoneclient.openstack.common.apiclient.exceptions import NotFound
 
 from novaclient import client as nova_client
 
+import swiftclient
+
 log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
 
@@ -53,6 +55,8 @@ DEFAULT_SECGROUP_RULES = [
     ['tcp', '22', '22', '0.0.0.0/0'],
 ]
 USERS_MAILING_LIST='https://lists.uzh.ch/s3it.lists.uzh.ch/sympa/review/cloud'
+# Default swift quota is 1TB
+DEFAULT_SWIFT_QUOTA =2**40
 
 class ProjectExists(Exception): pass
 
@@ -209,13 +213,15 @@ def create_project(opts, sess):
     keystone.roles.grant(memberrole,
                          user=currentuser,
                          project=project)
-
+    return project
 
 def setup_default_security_group(opts, sess):
     print("Setting up default security group for project %s: %s" % (opts.name, DEFAULT_SECGROUP_RULES))
 
+    opts.os_admin_project_name = opts.os_project_name
     opts.os_project_name = opts.name
     sess = make_session(opts)
+    opts.os_project_name = opts.os_admin_project_name
     nclient = nova_client.Client('2', session=sess)
     secgroup = nclient.security_groups.find(name='default')
     for rule in DEFAULT_SECGROUP_RULES:
@@ -225,6 +231,37 @@ def setup_default_security_group(opts, sess):
             print("Ignoring error '%s' when adding rule %s to security group"
             "'%s'" % (ex, rule, secgroup.name))
 
+def setup_default_swift_quota(opts):
+    print("Setting up default swift quota")
+    sess = make_session(opts)
+    kclient = keystone_client.Client(session=sess)
+    adminproject = kclient.projects.find(name=opts.os_project_name)
+    currproject = kclient.projects.find(name=opts.name)
+
+    token = sess.get_token()
+    try:
+        swift_service = kclient.services.find(type='object-store')
+        swift_endpoint = kclient.endpoints.find(service_id=swift_service.id, interface='public')
+    except Exception as ex:
+        log.warn("No swift endpoint. Ignoring (exception was: %s", ex)
+        return
+    storage_url = swift_endpoint.url % dict(tenant_id=currproject.id)
+    account = swiftclient.head_account(storage_url, token)
+    currquota = int(account.get('x-account-meta-quota-bytes', -1))
+    if currquota == -1:
+        log.info("No SWIFT quota for tenant %s", opts.name)
+    else:
+        log.info("Current SWIFT quota for tenant %s: %d bytes", opts.name, currquota)
+    try:
+        swiftclient.post_account(url=storage_url,
+                                 token=token,
+                                 headers={'x-account-meta-quota': DEFAULT_SWIFT_QUOTA})
+    except Exception as ex:
+        log.error("Failed to set SWIFT quota %s to tenant %s: %s",
+                  DEFAULT_SWIFT_QUOTA, opts.name, ex)
+    
+    
+    
 # From https://gist.github.com/blinks/47987
 def verify_email_address(addr, mail_from, skip_delivery_check=False):
     """Verify the existance of a single email address."""
@@ -275,11 +312,12 @@ def main(opts):
 
     sess = make_session(opts)
     try:
-        create_project(opts, sess)
+        project = create_project(opts, sess)
     except ProjectExists:
         print("Project %s already exists. Nothing to do." % opts.name)
         return 1
     setup_default_security_group(opts, sess)
+    setup_default_swift_quota(opts)
     print_postinstall_info(opts)
 
 
