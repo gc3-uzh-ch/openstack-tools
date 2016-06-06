@@ -41,6 +41,8 @@ from cinderclient import client as cinder_client
 import cinderclient.exceptions as cex
 from neutronclient.v2_0 import client as neutron_client
 
+import swiftclient
+
 log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
 
@@ -172,6 +174,10 @@ def setup(argv=sys.argv[1:]):
     parser.add_argument('--n-router',
                         type=check_signed_int)
 
+    parser.add_argument('--s-gigabytes',
+                        type=check_signed_int,
+                        help='Total amount of gigabibytes for SWIFT')
+    
     parser.add_argument('project',
                         help="Project to update")
 
@@ -237,7 +243,45 @@ def update_nova_quota(opts, project):
                 "--n-port N with N > %d" % opts.c_instances[1])
     return _update_quota(project.id, opts, quota_names, client, 'NOVA')
 
+def update_swift_quota(opts, project):
+    sess = make_session(opts)
+    kclient = keystone_client.Client(session=sess)
+    token = sess.get_token()
+    try:
+        swift_service = kclient.services.find(type='object-store')
+        swift_endpoint = kclient.endpoints.find(service_id=swift_service.id, interface='public')
+        storage_url = swift_endpoint.url % dict(tenant_id=project.id)
+    except Exception as ex:
+        log.error("No swift endpoint found. (exception was: %s", ex)
+        return ''
 
+    account = swiftclient.head_account(storage_url, token)
+    currquota = int(account.get('x-account-meta-quota-bytes', 0))
+    log.debug("Current SWIFT for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
+    func, value = opts.s_gigabytes
+    # Value is supposed to be in gigabibytes, convert it to bytes
+    oldvalue = value*(2**30)
+    newvalue = func(currquota, oldvalue)
+    delta = newvalue-currquota
+    if delta == 0:
+        log.info("Not updating quota for SWIFT as %s == %s",
+                 oldvalue, newvalue)
+        return ''
+    try:
+        swiftclient.post_account(url=storage_url,
+                                 token=token,
+                                 headers={'x-account-meta-quota-bytes': newvalue})
+    except Exception as ex:
+        log.error("Failed to set SWIFT quota %s to tenant %s: %s",
+                  newvalue, project.name, ex)
+
+    newvalue_gb = float(newvalue)/2**30
+    delta_gb = float(newvalue - currquota)/2**30
+
+    strdelta = '+%d' % delta_gb if delta>0 else "%d" % delta_gb
+        
+    return "(%s) SWIFT: %d GiB (%s GiB)\n" % (opts.date, newvalue_gb, strdelta)
+    
 def update_cinder_quota(opts, project):
     sess = make_session(opts)
     client = cinder_client.Client('2', session=sess)
@@ -354,6 +398,12 @@ def main(opts):
             print("Quota for neutron updated.")
             log.info(update)
 
+        update = update_swift_quota(opts, project)
+        if update:
+            updates += update
+            print("Quota for SWIFT updated.")
+            log.info(update)
+            
         if updates:
             if opts.msg:
                 history = "%s(%s) %s\n%s" % (history, opts.date, opts.msg, updates)
