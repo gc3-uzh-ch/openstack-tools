@@ -255,7 +255,7 @@ def setup_default_swift_quota(opts):
     try:
         swiftclient.post_account(url=storage_url,
                                  token=token,
-                                 headers={'x-account-meta-quota': DEFAULT_SWIFT_QUOTA})
+                                 headers={'x-account-meta-quota-bytes': DEFAULT_SWIFT_QUOTA})
     except Exception as ex:
         log.error("Failed to set SWIFT quota %s to tenant %s: %s",
                   DEFAULT_SWIFT_QUOTA, opts.name, ex)
