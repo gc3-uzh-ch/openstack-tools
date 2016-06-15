@@ -140,6 +140,8 @@ def setup(argv=sys.argv[1:]):
 
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
+    parser.add_argument('-n', '--dry-run', action='store_true',
+                        help='Do not actually change anything, only show what would be changed')
     parser.add_argument('--date',
                         type=mktime,
                         default=datetime.date.today().strftime(STD_DATE_FMT),
@@ -215,7 +217,10 @@ def _update_quota(projectid, opts, names, client, servicename):
     # Update quota
     # Update history
     if quota_update:
-        client.quotas.update(projectid, **quota_update)
+        if not opts.dry_run:
+            client.quotas.update(projectid, **quota_update)
+        else:
+            print("Updating %s quota. %s" % (servicename, str(quota_update)))
         log.info("Updating %s quota. %s" % (servicename, str(quota_update)))
         return '(%s) %s: %s\n' % (opts.date, servicename, str.join(', ', changelog))
     else:
@@ -259,7 +264,11 @@ def update_swift_quota(opts, project):
         log.error("No swift endpoint found. (exception was: %s", ex)
         return ''
 
-    account = swiftclient.head_account(storage_url, token)
+    try:
+        account = swiftclient.head_account(storage_url, token)
+    except Exception as ex:
+        log.error("Unable to get information on SWIFT project %s: %s", project.id, ex)
+        return ''
     currquota = int(account.get('x-account-meta-quota-bytes', -1))
     log.debug("Current SWIFT for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
     func, value = opts.s_gigabytes
@@ -272,9 +281,13 @@ def update_swift_quota(opts, project):
                  oldvalue, newvalue)
         return ''
     try:
-        swiftclient.post_account(url=storage_url,
-                                 token=token,
-                                 headers={'x-account-meta-quota-bytes': newvalue})
+        if not opts.dry_run:
+            swiftclient.post_account(url=storage_url,
+                                     token=token,
+                                     headers={'x-account-meta-quota-bytes': newvalue})
+        else:
+            print("Updating SWIFT quota %s => %s" % (oldvalue, newvalue))
+        log.info("Updating SWIFT quota %s => %s", oldvalue, newvalue)
     except Exception as ex:
         log.error("Failed to set SWIFT quota %s to tenant %s: %s",
                   newvalue, project.name, ex)
@@ -347,7 +360,10 @@ def update_neutron_quota(opts, project):
     # Update quota
     # Update history
     if quota_update:
-        client.update_quota(project.id, {'quota': quota_update})
+        if not opts.dry_run:
+            client.update_quota(project.id, {'quota': quota_update})
+        else:
+            print("Updating %s quota. %s" % (servicename, str(quota_update)))
         log.info("Updating %s quota. %s" % (servicename, str(quota_update)))
         return '(%s) %s: %s\n' % (opts.date, servicename, str.join(', ', changelog))
     else:
