@@ -267,7 +267,7 @@ def update_swift_quota(opts, project):
     oldvalue = value*(2**30)
     newvalue = func(currquota, oldvalue)
     delta = newvalue-currquota
-    if currquota != -1 or delta == 0:
+    if currquota != -1 and delta == 0:
         log.info("Not updating quota for SWIFT as %s == %s",
                  oldvalue, newvalue)
         return ''
