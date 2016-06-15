@@ -41,7 +41,11 @@ from email.mime.text import MIMEText
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
 from keystoneclient.v3 import client as keystone_client
-from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+try:
+    # old package name
+    from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+except ImportError:
+    from keystoneclient.exceptions import NotFound
 
 from novaclient import client as nova_client
 from cinderclient import client as cinder_client

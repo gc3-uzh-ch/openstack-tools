@@ -36,7 +36,11 @@ import csv
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
 from keystoneclient.v3 import client as keystone_client
-import keystoneclient.openstack.common.apiclient.exceptions as kex
+try:
+    # old package name
+    import keystoneclient.openstack.common.apiclient.exceptions as kex
+except ImportError:
+    import keystoneclient.exceptions as kex
 
 from novaclient import client as nova_client
 from cinderclient import client as cinder_client

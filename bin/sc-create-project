@@ -40,7 +40,11 @@ import time
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
 from keystoneclient.v3 import client as keystone_client
-from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+try:
+    # old package name
+    from keystoneclient.openstack.common.apiclient.exceptions import NotFound
+except ImportError:
+    from keystoneclient.exceptions import NotFound
 
 from novaclient import client as nova_client
 
@@ -55,8 +59,8 @@ DEFAULT_SECGROUP_RULES = [
     ['tcp', '22', '22', '0.0.0.0/0'],
 ]
 USERS_MAILING_LIST='https://lists.uzh.ch/s3it.lists.uzh.ch/sympa/review/cloud'
-# Default swift quota is 1TB
-DEFAULT_SWIFT_QUOTA =2**40
+# Default swift quota is 0 for the time being
+DEFAULT_SWIFT_QUOTA =0
 
 class ProjectExists(Exception): pass
 
@@ -259,9 +263,9 @@ def setup_default_swift_quota(opts):
     except Exception as ex:
         log.error("Failed to set SWIFT quota %s to tenant %s: %s",
                   DEFAULT_SWIFT_QUOTA, opts.name, ex)
-    
-    
-    
+
+
+
 # From https://gist.github.com/blinks/47987
 def verify_email_address(addr, mail_from, skip_delivery_check=False):
     """Verify the existance of a single email address."""
