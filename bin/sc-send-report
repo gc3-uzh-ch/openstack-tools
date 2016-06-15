@@ -153,6 +153,9 @@ def setup():
                         default="smtp.uzh.ch",
                         help="SMTP server to use. Default: %(default)s")
 
+    parser.add_argument('--cloud-name',
+                        default='ScienceCloud',
+                        help="Name of the cloud. Default: %(default)s")
     parser.add_argument('--mail-from',
                         default="sysadmin@s3it.lists.uzh.ch",
                         help="Sender Email address. Default: %(default)s")
@@ -385,7 +388,7 @@ def main(opts):
             send_mail_to(opts.smtp,
                          opts.mail_from,
                          opts.admin_email,
-                         "ScienceCloud usage from %s to %s" % (opts.start, opts.end),
+                         "%s usage from %s to %s" % (opts.cloud_name, opts.start, opts.end),
                          str.join("\n\n", all_reports.values()))
         except Exception as ex:
             log.error("Unable to send email to admin %s: %s",
@@ -393,9 +396,12 @@ def main(opts):
         for project_id, report in all_reports.items():
             try:
                 pdict = projects.get(project_id).to_dict()
-                recipients = set([pdict.get('contact_email'),
-                                  pdict.get('owner_email'),
-                                  pdict.get('s3it_owner_email')])
+                if pdict.get('report_recipients'):
+                    recipients = set(pdict.get('report_recipients').split(','))
+                else:
+                    recipients = set([pdict.get('contact_email'),
+                                      pdict.get('owner_email'),
+                                      pdict.get('s3it_owner_email')])
             except Exception as ex:
                 log.error("Error getting recipients address from project id %s" % project_id)
                 continue
@@ -405,7 +411,7 @@ def main(opts):
                         send_mail_to(opts.smtp,
                                      opts.mail_from,
                                      recipient,
-                                     "ScienceCloud usage for project %s from %s to %s" % (pdict['name'], opts.start, opts.end),
+                                     "%s usage for project %s from %s to %s" % (opts.cloud_name, pdict['name'], opts.start, opts.end),
                                      report)
                     except Exception as ex:
                         log.error(
