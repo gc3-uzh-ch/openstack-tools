@@ -34,7 +34,11 @@ import sys
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
 from keystoneclient.v3 import client as keystone_client
-import keystoneclient.openstack.common.apiclient.exceptions as kex
+try:
+    # old package name
+    import keystoneclient.openstack.common.apiclient.exceptions as kex
+except ImportError:
+    import keystoneclient.exceptions as kex
 
 from novaclient import client as nova_client
 from cinderclient import client as cinder_client
@@ -177,7 +181,7 @@ def setup(argv=sys.argv[1:]):
     parser.add_argument('--s-gigabytes',
                         type=check_signed_int,
                         help='Total amount of gigabibytes for SWIFT')
-    
+
     parser.add_argument('project',
                         help="Project to update")
 
@@ -279,9 +283,9 @@ def update_swift_quota(opts, project):
     delta_gb = float(newvalue - currquota)/2**30
 
     strdelta = '+%d' % delta_gb if delta>0 else "%d" % delta_gb
-        
+
     return "(%s) SWIFT: %d GiB (%s GiB)\n" % (opts.date, newvalue_gb, strdelta)
-    
+
 def update_cinder_quota(opts, project):
     sess = make_session(opts)
     client = cinder_client.Client('2', session=sess)
@@ -403,7 +407,7 @@ def main(opts):
             updates += update
             print("Quota for SWIFT updated.")
             log.info(update)
-            
+
         if updates:
             if opts.msg:
                 history = "%s(%s) %s\n%s" % (history, opts.date, opts.msg, updates)
