@@ -260,14 +260,14 @@ def update_swift_quota(opts, project):
         return ''
 
     account = swiftclient.head_account(storage_url, token)
-    currquota = int(account.get('x-account-meta-quota-bytes', 0))
+    currquota = int(account.get('x-account-meta-quota-bytes', -1))
     log.debug("Current SWIFT for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
     func, value = opts.s_gigabytes
     # Value is supposed to be in gigabibytes, convert it to bytes
     oldvalue = value*(2**30)
     newvalue = func(currquota, oldvalue)
     delta = newvalue-currquota
-    if delta == 0:
+    if currquota != -1 or delta == 0:
         log.info("Not updating quota for SWIFT as %s == %s",
                  oldvalue, newvalue)
         return ''
