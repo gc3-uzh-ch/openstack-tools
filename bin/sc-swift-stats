@@ -1,0 +1,274 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2016, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import logging
+import os
+import csv
+import sys
+import re
+from collections import defaultdict
+import multiprocessing as mp
+import operator
+
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client as keystone_client
+try:
+    # old package name
+    import keystoneclient.openstack.common.apiclient.exceptions as kex
+except ImportError:
+    import keystoneclient.exceptions as kex
+
+import swiftclient.client as swiftclient
+
+log = logging.getLogger()
+log.addHandler(logging.StreamHandler())
+
+def b_to_human(value):
+    """Convert bytes to human readable string"""
+    value = float(value)
+    for unit, threshold in [('EiB', 2**60),
+                            ('PiB', 2**50),
+                            ('TiB', 2**40),
+                            ('GiB', 2**30),
+                            ('MiB', 2**20),
+                            ('KiB', 2**10),
+                            ]:
+        if value > threshold:
+            return "%.2f %s" % (value/threshold, unit)
+    return "%d B" % value
+
+def n_to_human(value):
+    """Convert numbers using SI prefixes"""
+    value = float(value)
+    for unit, threshold in [('E', 10**18),
+                            ('P', 10**15),
+                            ('T', 10**12),
+                            ('G', 10**9),
+                            ('M', 10**6),
+                            ('K', 10**3),]:
+        if value > threshold:
+            return "%.2f%s" % (value/threshold, unit)
+    return "%d" % value
+
+respolicy = re.compile('x-account-storage-policy-(?P<policy>.*)-(?P<value>bytes-used|object-count)')
+
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       username=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       user_domain_id=opts.os_user_domain_id,
+                       project_domain_id=opts.os_project_domain_id)
+    sess = session.Session(auth=auth)
+    return sess
+
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+def setup(argv=sys.argv[1:]):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+    parser.add_argument('--os-user-domain-id',
+                        default='default')
+    parser.add_argument('--os-project-domain-id',
+                        default='default')
+    parser.add_argument('-p', '--parallel', default=4, type=int)
+    parser.add_argument('-o', '--output', default='swift-stats.csv')
+    parser.add_argument('-H', '--human', action='store_true')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+    parser.add_argument('project',
+                        nargs='*',
+                        help="Create reports only for these projects. Default: all projects")
+    opts = parser.parse_args(argv)
+
+    # Set verbosity
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
+    return (opts, parser)
+
+def list_projects(opts):
+    sess = make_session(opts)
+    keystone = keystone_client.Client(session=sess)
+    try:
+        swift_service = keystone.services.find(type='object-store')
+    except:
+        raise Exception("Unable to find service swift")
+
+    try:
+        swift_endpoint = keystone.endpoints.find(interface='public',
+                                                 service_id=swift_service.id)
+    except:
+        raise Exception("No endpoint defined for service swift")
+
+    all_projects = keystone.projects.list()
+    log.info("Got information about %d projects", len(all_projects))
+    if opts.project:
+        projects = {p.id: p.to_dict() for p in all_projects  if p.name in opts.project or p.id in opts.project}
+    else:
+        projects = {p.id:p.to_dict() for p in all_projects}
+
+    log.info("Retaining only %d projects", len(projects))
+    for project in projects.values():
+        project['storage_url'] = swift_endpoint.url % {'tenant_id':project['id']}
+    return projects
+    
+class SwiftChecker(mp.Process):
+    def __init__(self, tasks, results, opts):
+        mp.Process.__init__(self)
+        self.tasks = tasks
+        self.results = results
+        self.opts = opts
+
+    def run(self):
+        while True:
+            try:
+                project = self.tasks.get_nowait()
+            except:
+                break
+            if project is None:
+                log.info("Queue is empty, exiting")
+                break
+            report = self.get_swift_stats(project)
+            report['project'] = project
+            self.results.put(report)
+            self.tasks.task_done()
+    
+    def get_swift_stats(self, project):
+        log.info("Checking swift for project %s", project['name'])
+        conn = swiftclient.Connection(
+            authurl=self.opts.os_auth_url,
+            user=self.opts.os_username,
+            key=self.opts.os_password,
+            os_options={"auth_url": self.opts.os_auth_url,
+                        "project_name": self.opts.os_project_name,
+                        "project_domain_id": self.opts.os_project_domain_id,
+                        "username": self.opts.os_username,
+                        "user_domain_id": self.opts.os_user_domain_id,
+                        "password": self.opts.os_password,
+                        "object_storage_url": project['storage_url'],},
+            auth_version='3')
+        account,containers = conn.get_account()
+        acc_report = {
+            'bytes': int(account['x-account-bytes-used']),
+            'containers': int(account.get('x-account-container-count', 0)),
+            'objects': int(account.get('x-account-object-count', 0)),
+            'quota': int(account.get('x-account-meta-quota-bytes', -1)),
+        }
+        policies = acc_report['policies'] = defaultdict(dict)
+        # Check per-storage policy data
+        for key, value in account.items():
+            m = respolicy.search(key)
+            if m:
+                policies[m.group('policy')][m.group('value')] = int(value)
+
+        log.info("REPORT: %s", acc_report)
+        return acc_report
+
+def save_report(reports, opts):
+    with open(opts.output, 'w') as csvfd:
+        writer = csv.writer(csvfd)
+        header = ['project', 'bytes', 'quota', 'containers', 'objects']
+        policies = set(reduce(operator.add, [report['policies'].keys() for report in reports], []))
+        for policy in sorted(policies):
+            header += ['bytes (%s policy)' % policy, 'objects (%s policy)' % policy]
+        writer.writerow(header)
+
+        byte_conv = b_to_human if opts.human else lambda x: str(x)
+        num_conv = n_to_human if opts.human else lambda x: str(x)
+        for report in reports:
+            row = [report['project']['name'],
+                   byte_conv(report['bytes']),
+                   byte_conv(report['quota']),
+                   num_conv(report['containers']),
+                   num_conv(report['objects'])]
+            for policy in policies:
+                if policy not in report['policies']:
+                    row += [0,0]
+                else:
+                    row.append(byte_conv(report['policies'][policy]['bytes-used']))
+                    row.append(num_conv(report['policies'][policy]['object-count']))
+            writer.writerow(row)
+
+def main(opts):
+    reports = {}
+    tasks = mp.JoinableQueue()
+    results = mp.Queue()
+    projects = list_projects(opts)
+    for project in projects.values():
+        tasks.put(project)
+
+    consumers = [SwiftChecker(tasks, results, opts) for i in range(opts.parallel)]
+    for w in consumers:
+        w.start()
+
+    log.info("Joining task queue")
+    tasks.join()
+    log.info("Terminating consumers")
+    [w.terminate() for w in consumers]
+    reports = []    
+    while not results.empty():
+        reports.append(results.get())
+
+    save_report(reports, opts)
+
+
+if __name__ == "__main__":
+    opts, parser = setup()
+    sys.exit(main(opts))
