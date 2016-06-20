@@ -222,6 +222,7 @@ def setup():
                         help='Increase verbosity')
     parser.add_argument('--ceilometer', action='store_true', help='Also include ceilometer checks')
     parser.add_argument('--prices', action='store_true', help='Also include prices')
+    parser.add_argument('--yesterday', action='store_true', help='Get reports from yesterda')
     parser.add_argument('-p', '--parallel', default=4, type=int)
     parser.add_argument('--csvdir', default='/tmp/sc-send-report', help='Directory where csv data')
     parser.add_argument('project',
@@ -235,18 +236,22 @@ def setup():
     log.setLevel(verbosity)
     # if not opts.start or not opts.end:
     #     pass # not yet implemented
-    if (opts.start and not opts.end) or \
+    if opts.yesterday:
+        now = datetime.datetime.now()
+        y_now = now - datetime.timedelta(days=1)
+        opts.start = datetime.datetime(y_now.year, y_now.month, y_now.day, 0, 0)
+        opts.end = datetime.datetime(y_now.year, y_now.month, y_now.day, 23, 59)
+    elif (opts.start and not opts.end) or \
        (not opts.start and opts.end):
         parser.error("You either specify both --start and --end, or you just use the default")
-    if not opts.start:
+    elif not opts.start:
         now = datetime.datetime.now()
-        # First day of previous month
-        year = now.year if now.month > 1 else now.year-1
-        month = now.month-1 if now.month > 1 else 12
-        lastday = calendar.monthrange(year, month)[-1]
-        opts.start = datetime.datetime(year, month, 1)
-        # Last day of previous month, time 23:59
-        opts.end = datetime.datetime(year, month, lastday, 23, 59)
+        # get to the first day of the month
+        firstday=datetime.datetime(now.year, now.month, 1, 0, 0)
+        # Go back 24 hours and one minute
+        opts.end = firstday - datetime.timedelta(hours=24,minutes=1)
+        # Go back at the first day of last month
+        opts.start = datetime.datetime(opts.end.year, opts.end.month, 1, 0, 0)
     else:
         # opts.end should be the whole day
         opts.end = datetime.datetime(opts.end.year, opts.end.month, opts.end.day, 23, 59)
@@ -744,6 +749,7 @@ def main(opts):
                             "Unable to send report email for project %s to"
                             " recipient %s: %s", pdict['name'], recipient, ex)
     else:
+        print("Reports from %s to %s" % (opts.start, opts.end))
         for project_id, report in all_reports.items():
             print("="*80)
             print(report['msg'])
