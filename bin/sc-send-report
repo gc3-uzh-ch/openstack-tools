@@ -406,15 +406,13 @@ def create_nova_report(project, nova_summary, instances):
     csvdata_detailed = []
 
     # Summary information
-    header = ['Project', 'vcpu hours', 'ram (hours)']
+    header = ['vcpu hours', 'ram (hours)']
 
     pt = prettytable.PrettyTable(header)
-    pt.align['Project'] = 'l'
     pt.align['vcpu hours'] = 'r'
     pt.align['ram (hours)'] = 'r'
     
-    row = [project.name,
-           "%.2f" % nova_summary.total_vcpus_usage,
+    row = ["%.2f" % nova_summary.total_vcpus_usage,
            # "%.2f" % (cpu[project].max/1e+9/60/60),
            mib_to_str(nova_summary.total_memory_mb_usage),
     ]
@@ -467,18 +465,16 @@ def create_nova_ceilometer_report(project, nova_summary, instances, cpu_util, cp
     header = ['Project', 'vcpu hours', 'cpu time (hours)', 'ram (hours)', 'avg cpu %']
 
     pt = prettytable.PrettyTable(header)
-    pt.align['Project'] = 'l'
     pt.align['vcpu hours'] = 'r'
     pt.align['cpu time (hours)'] = 'r'
     pt.align['ram (hours)'] = 'r'
     pt.align['avg cpu %'] = 'r'
 
-    row = [project.name,
-                "%.2f" % nova_summary.total_vcpus_usage,
-                "%.2f" % (cpu_util.avg * nova_summary.total_vcpus_usage / 100),
-                # "%.2f" % (cpu[project].max/1e+9/60/60),
-                mib_to_str(nova_summary.total_memory_mb_usage),
-                "%.2f %%" % cpu_util.avg,
+    row = ["%.2f" % nova_summary.total_vcpus_usage,
+           "%.2f" % (cpu_util.avg * nova_summary.total_vcpus_usage / 100),
+           # "%.2f" % (cpu[project].max/1e+9/60/60),
+           mib_to_str(nova_summary.total_memory_mb_usage),
+           "%.2f %%" % cpu_util.avg,
     ]
     csvdata = [header, row]
     pt.add_row(row)
@@ -542,11 +538,11 @@ def create_nova_ceilometer_report(project, nova_summary, instances, cpu_util, cp
 def create_cinder_report(project, cinder_summary):
     report = []
     csvdata = []
-    header = ['Project', 'volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
+    header = ['volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
+    csvdata.append(header)
     pt = prettytable.PrettyTable(header, print_empty=False)
     for field in pt.field_names:
         pt.align[field] = 'r'
-    pt.align['Project'] = 'l'
     pt.align['volume type'] = 'l'
     global_quota = cinder_summary['']
     for voltype, quota in cinder_summary.items():
@@ -555,12 +551,11 @@ def create_cinder_report(project, cinder_summary):
         gigabytes = quota['gigabytes']
         vol_limit = volumes['limit'] if volumes['limit'] != -1 else global_quota['volumes']['limit']
         gb_limit = gigabytes['limit'] if gigabytes['limit'] != -1 else global_quota['gigabytes']['limit']
-        row = [project.name,
-                    voltype,
-                    "%d" % volumes['in_use'],
-                    "%.2f %%" % abs(volumes['in_use']*100.0/vol_limit),
-                    "%d" % gigabytes['in_use'],
-                    "%.2f %%" % abs(gigabytes['in_use']*100.0/gb_limit),
+        row = [voltype,
+               "%d" % volumes['in_use'],
+               "%.2f %%" % abs(volumes['in_use']*100.0/vol_limit),
+               "%d" % gigabytes['in_use'],
+               "%.2f %%" % abs(gigabytes['in_use']*100.0/gb_limit),
         ]
         csvdata.append(row)
         pt.add_row(row)
@@ -577,12 +572,11 @@ def create_swift_report(project, swift_summary):
         return ("No SWIFT storage used", {'summary': []})
 
     report = []
-    header = ['Project', 'objects', 'containers', 'bytes', 'quota', 'quota usage']
+    header = ['objects', 'containers', 'bytes', 'quota', 'quota usage']
     csvdata = [header]
     pt = prettytable.PrettyTable(header)
     for k in pt.align:
         pt.align[k] = 'r'
-    pt.align['Project'] = 'l'
 
     if swift_summary['quota'] > 1:
         quota_p = "%.2f %%" % (float(swift_summary['bytes'])*100/int(swift_summary['quota']))
@@ -590,22 +584,27 @@ def create_swift_report(project, swift_summary):
         quota_p = '100%'
     else:
         quota_p = '0%'
-    row = [project.name,
-           "%d (%s)" % (swift_summary['objects'], n_to_human(swift_summary['objects'])),
+    row = ["%d (%s)" % (swift_summary['objects'], n_to_human(swift_summary['objects'])),
            "%d (%s)" % (swift_summary['containers'], n_to_human(swift_summary['containers'])),
            "%d (%s)" % (swift_summary['bytes'], b_to_human(swift_summary['bytes'])),
-           "%d (%s)" % (swift_summary['quota'],b_to_human(swift_summary['quota'])),
+           "%d (%s)" % (swift_summary['quota'], b_to_human(swift_summary['quota'])),
            quota_p
     ]
-    csvdata.append(row)
     pt.add_row(row)
+    csvdata.append([
+        swift_summary['objects'],
+        swift_summary['containers'],
+        swift_summary['bytes'],
+        swift_summary['quota'],
+        quota_p
+    ])
     report.append("Summary of SWIFT storage for project %s\n" % project.name)
     report.append(str(pt))
 
     csvdata_detailed = []
     if swift_summary['policies'] > 0:
         header = ['Storage policy', 'bytes', 'objects']
-        csvdata_detailed = [header]
+        csvdata_detailed.append(header)
         pt = prettytable.PrettyTable(header)
         # pt = prettytable.PrettyTable(('Storage policy', 'bytes', 'objects', 'quota price', 'actual price'))
         pt.align['Storage policy'] = 'l'
@@ -621,12 +620,12 @@ def create_swift_report(project, swift_summary):
                    # compute_price_swift(data['bytes-used'], policy),
             ]
             pt.add_row(row)            
-            csvdata_detailed.append(row)
+            csvdata_detailed.append([policy, data['bytes-used'], data['object-count']])
         report.append("")
         report.append("Summary of SWIFT storage by storage policy for project %s\n" % project.name)
         report.append(str(pt))
 
-    reportdata = {'summary': csvdata}    
+    reportdata = {'summary': csvdata}  
     if csvdata_detailed:
         reportdata['detailed'] = csvdata_detailed
     return (str.join('\n', report), reportdata)
@@ -700,6 +699,8 @@ def main(opts):
                 continue
             fname = os.path.join(opts.csvdir, "%s-%s_%s-%s.csv" % (
                 service, reportype, opts.start, opts.end))
+            if reportype == 'detailed':
+                import pdb; pdb.set_trace()
             write_header = True
             with open(fname, 'w') as fd:
                 writer = csv.writer(fd)
