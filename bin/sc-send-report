@@ -27,16 +27,23 @@ __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 
 # Metrics http://docs.openstack.org/admin-guide-cloud/content/section_telemetry-compute-meters.html
 
+from collections import defaultdict
+from email.mime.text import MIMEText
 import argparse
 import calendar
+import csv
 import datetime
 import getpass
 import logging
+import multiprocessing as mp
+import operator
 import os
 import prettytable
+import re
 import smtplib
 import sys
-from email.mime.text import MIMEText
+
+import swiftclient.client as swiftclient
 
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
@@ -52,8 +59,23 @@ from cinderclient import client as cinder_client
 
 import ceilometerclient.client
 
+respolicy = re.compile('x-account-storage-policy-(?P<policy>.*)-(?P<value>bytes-used|object-count)')
+
 log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
+
+
+### Converion functions
+def compute_price_cinder(volumes, gb):
+    return "%d CHF" % (gb*100/2**10/12)
+
+def compute_price_swift(size, policy='replica-2'):
+    if policy == 'replica-2':
+        return "%d CHF" % (80*size/2**40/12)
+    elif policy == 'ec104':
+        return "%d CHF" % (50*size/2**40/12)
+    else:
+        return "N/A"
 
 def mib_to_str(value):
     """Convert a numeric value expressed in MiB to a human-readable format"""
@@ -64,6 +86,34 @@ def mib_to_str(value):
     else:
         return "%.2f MiB" % value
 
+def b_to_human(value):
+    """Convert bytes to human readable string"""
+    value = float(value)
+    for unit, threshold in [('EiB', 2**60),
+                            ('PiB', 2**50),
+                            ('TiB', 2**40),
+                            ('GiB', 2**30),
+                            ('MiB', 2**20),
+                            ('KiB', 2**10),
+                            ]:
+        if value > threshold:
+            return "%.2f %s" % (value/threshold, unit)
+    return "%d B" % value
+
+def n_to_human(value):
+    """Convert numbers using SI prefixes"""
+    value = float(value)
+    for unit, threshold in [('E', 10**18),
+                            ('P', 10**15),
+                            ('T', 10**12),
+                            ('G', 10**9),
+                            ('M', 10**6),
+                            ('K', 10**3),]:
+        if value > threshold:
+            return "%.2f%s" % (value/threshold, unit)
+    return "%d" % value
+
+### Internal functions
 def memoize(f):
     memo = {}
     def helper(x):
@@ -96,6 +146,9 @@ def send_mail_to(smtp, mailfrom, to, subject, msg):
     log.info("Sending email to %s with subject \"%s\"", to, subject)
     s.sendmail(mailfrom, [to], msg.as_string())
     s.quit()
+
+
+### Setup functions
 
 class EnvDefault(argparse.Action):
     # This is took from
@@ -167,6 +220,10 @@ def setup():
                         help="Create report to END date (format: YYYY-MM-DD)")
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
+    parser.add_argument('--ceilometer', action='store_true', help='Also include ceilometer checks')
+    parser.add_argument('--prices', action='store_true', help='Also include prices')
+    parser.add_argument('-p', '--parallel', default=4, type=int)
+    parser.add_argument('--csvdir', default='/tmp/sc-send-report', help='Directory where csv data')
     parser.add_argument('project',
                         nargs='*',
                         help="Create reports only for these projects. Default: all projects")
@@ -195,6 +252,8 @@ def setup():
         opts.end = datetime.datetime(opts.end.year, opts.end.month, opts.end.day, 23, 59)
 
     return opts
+
+### OpenStack functions
 
 @memoize
 def make_ceilometer_client(opts):
@@ -244,11 +303,242 @@ def get_raw_ceilometer_metric(opts, metric, g=None, q=None):
     data = cclient.statistics.list(metric, groupby=g, q=q)
     return data
 
-def create_report_for_project(project, nova_summary, cinder_summary, instances, cpu_util, cpu_util_detailed):
-    """Create a report for a specific report. Returns a text report"""
-    report = []
+class SwiftChecker(mp.Process):
+    def __init__(self, tasks, results, opts):
+        mp.Process.__init__(self)
+        self.tasks = tasks
+        self.results = results
+        self.opts = opts
 
-    pt = prettytable.PrettyTable(('Project', 'volume type', 'volumes', 'volumes %', 'gigabytes', 'gigabytes %'))
+    def run(self):
+        while True:
+            try:
+                project = self.tasks.get_nowait()
+            except:
+                break
+            if project is None:
+                log.debug("SwiftChecker %s: Queue is empty, exiting", self.name)
+                break
+            report = self.get_swift_stats(project)
+            report['project'] = project
+            self.results.put(report)
+            self.tasks.task_done()
+
+    def get_swift_stats(self, project):
+        log.debug("Checking swift for project %s", project['name'])
+        conn = swiftclient.Connection(
+            authurl=self.opts.os_auth_url,
+            user=self.opts.os_username,
+            key=self.opts.os_password,
+            os_options={"auth_url": self.opts.os_auth_url,
+                        "project_name": self.opts.os_project_name,
+                        "project_domain_id": self.opts.os_project_domain_id,
+                        "username": self.opts.os_username,
+                        "user_domain_id": self.opts.os_user_domain_id,
+                        "password": self.opts.os_password,
+                        "object_storage_url": project['storage_url'],},
+            auth_version='3')
+        account,containers = conn.get_account()
+        acc_report = {
+            'bytes': int(account['x-account-bytes-used']),
+            'containers': int(account.get('x-account-container-count', 0)),
+            'objects': int(account.get('x-account-object-count', 0)),
+            'quota': int(account.get('x-account-meta-quota-bytes', -1)),
+        }
+        policies = acc_report['policies'] = defaultdict(dict)
+        # Check per-storage policy data
+        for key, value in account.items():
+            m = respolicy.search(key)
+            if m:
+                policies[m.group('policy')][m.group('value')] = int(value)
+
+        log.debug("REPORT for project: %s: %s", project['name'], acc_report)
+        return acc_report
+
+def get_swift_summary(opts, projects, sess=None):
+    reports = {}
+    tasks = mp.JoinableQueue()
+    results = mp.Queue()
+    projects = projects.values()
+    # get endpoint
+    if not sess:
+        sess = make_session(opts)
+    keystone = keystone_client.Client(session=sess)
+    try:
+        swift_service = keystone.services.find(type='object-store')
+    except:
+        raise Exception("Unable to find service swift")
+
+    try:
+        swift_endpoint = keystone.endpoints.find(interface='public',
+                                                 service_id=swift_service.id)
+    except:
+        raise Exception("No endpoint defined for service swift")
+
+    for project in projects:
+        p = project.to_dict()
+        p['storage_url'] = swift_endpoint.url % {'tenant_id':project.id}
+        tasks.put(p)
+
+    consumers = [SwiftChecker(tasks, results, opts) for i in range(opts.parallel)]
+    for w in consumers:
+        w.start()
+
+    log.debug("Joining task queue")
+    tasks.join()
+    log.debug("Terminating consumers")
+    [w.terminate() for w in consumers]
+    reports = []
+    while not results.empty():
+        reports.append(results.get())
+    return {r['project']['id']:r for r in reports}
+
+### Reporting functions
+
+def create_nova_report(project, nova_summary, instances):
+    report = []
+    csvdata = []
+    csvdata_detailed = []
+
+    # Summary information
+    header = ['Project', 'vcpu hours', 'ram (hours)']
+
+    pt = prettytable.PrettyTable(header)
+    pt.align['Project'] = 'l'
+    pt.align['vcpu hours'] = 'r'
+    pt.align['ram (hours)'] = 'r'
+    
+    row = [project.name,
+           "%.2f" % nova_summary.total_vcpus_usage,
+           # "%.2f" % (cpu[project].max/1e+9/60/60),
+           mib_to_str(nova_summary.total_memory_mb_usage),
+    ]
+    csvdata = [header, row]
+    pt.add_row(row)
+
+    report.append("Summary of usage for project %s\n" % project.name)
+    report.append(str(pt))
+
+    # Again, for each project and server
+    header_detailed = [
+        'instance UUID',
+        'instance name',
+        'flavor',
+        'vcpus',
+        'cpu hours',
+    ]
+    csvdata_detailed.append(header_detailed)
+    pt = prettytable.PrettyTable(header_detailed, print_empty=False)
+    pt.align['instance name'] = 'l'
+    pt.align['flavor'] = 'l'
+    pt.align['vcpus'] = 'r'
+    pt.align['cpu hours'] = 'r'
+
+    for uuid, instance in instances.items():
+        cpuhours = instance['hours'] * instance['vcpus']
+        row = [uuid,
+               instance['name'],
+               instance['flavor'],
+               instance['vcpus'],
+               "%.2f hours" % cpuhours,
+        ]
+        csvdata_detailed.append(row)
+        pt.add_row(row)
+    table = str(pt)
+    if table:
+        report.append("")
+        report.append("Detailed usage for project %s - currently running instances\n" % project.name)
+        report.append(str(table))
+    
+
+    return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed})
+
+def create_nova_ceilometer_report(project, nova_summary, instances, cpu_util, cpu_util_detailed):
+    report = []
+    csvdata = []
+    csvdata_detailed = []
+
+    # Summary information
+    header = ['Project', 'vcpu hours', 'cpu time (hours)', 'ram (hours)', 'avg cpu %']
+
+    pt = prettytable.PrettyTable(header)
+    pt.align['Project'] = 'l'
+    pt.align['vcpu hours'] = 'r'
+    pt.align['cpu time (hours)'] = 'r'
+    pt.align['ram (hours)'] = 'r'
+    pt.align['avg cpu %'] = 'r'
+
+    row = [project.name,
+                "%.2f" % nova_summary.total_vcpus_usage,
+                "%.2f" % (cpu_util.avg * nova_summary.total_vcpus_usage / 100),
+                # "%.2f" % (cpu[project].max/1e+9/60/60),
+                mib_to_str(nova_summary.total_memory_mb_usage),
+                "%.2f %%" % cpu_util.avg,
+    ]
+    csvdata = [header, row]
+    pt.add_row(row)
+    report.append("Summary of usage for project %s\n" % project.name)
+    report.append(str(pt))
+
+    csvdata_detailed = []
+    header_detailed = [
+        'instance UUID',
+        'instance name',
+        'flavor',
+        'vcpus',
+        'avg cpu %',
+        'cpu hours',
+        'cpu time',
+    ]
+    
+    csvdata_detailed.append(header_detailed)
+    pt = prettytable.PrettyTable(header_detailed, print_empty=False)
+    pt.align['instance name'] = 'l'
+    pt.align['flavor'] = 'l'
+    pt.align['vcpus'] = 'r'
+    pt.align['avg cpu %'] = 'r'
+    pt.align['cpu hours'] = 'r'
+    pt.align['cpu time'] = 'r'
+    
+    mycpu_util = {i.groupby['resource_id']:i for i in cpu_util_detailed}
+    # mycpu = {i.groupby['resource_id']:i for i in cpu if i.groupby['project_id'] == project_id}
+    for uuid in mycpu_util:
+        if uuid not in instances:
+            log.info("No detailed information for instance %s - skipping" % uuid)
+            continue
+        instance = instances[uuid]
+        cpuhours = instance['hours'] * instance['vcpus']
+        row = [uuid,
+               instance['name'],
+               instance['flavor'],
+               instance['vcpus'],
+               "%.2f %%" % mycpu_util[uuid].avg,
+               "%.2f hours" % cpuhours,
+               # This is a cumulative value, so we need to get the *max*
+               # "%.2f hours" % (mycpu[uuid].max/1e+9/60/60),
+               #
+               # However, since this value is set to 0 when
+               # the instance is migrated or stopped and
+               # restarted, we better use the cpu_util
+               # instead...
+               "%.2f hours" % (mycpu_util[uuid].avg * cpuhours / 100),
+        ]
+        csvdata_detailed.append(row)
+        pt.add_row(row)
+
+    table = str(pt)
+    if table:
+        report.append("")
+        report.append("Detailed usage for project %s - currently running instances\n" % project.name)
+        report.append(str(table))
+
+    return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed})
+
+def create_cinder_report(project, cinder_summary):
+    report = []
+    csvdata = []
+    header = ['Project', 'volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
+    pt = prettytable.PrettyTable(header, print_empty=False)
     for field in pt.field_names:
         pt.align[field] = 'r'
     pt.align['Project'] = 'l'
@@ -260,80 +550,82 @@ def create_report_for_project(project, nova_summary, cinder_summary, instances, 
         gigabytes = quota['gigabytes']
         vol_limit = volumes['limit'] if volumes['limit'] != -1 else global_quota['volumes']['limit']
         gb_limit = gigabytes['limit'] if gigabytes['limit'] != -1 else global_quota['gigabytes']['limit']
-        pt.add_row([project.name,
+        row = [project.name,
                     voltype,
                     "%d" % volumes['in_use'],
                     "%.2f %%" % abs(volumes['in_use']*100.0/vol_limit),
                     "%d" % gigabytes['in_use'],
                     "%.2f %%" % abs(gigabytes['in_use']*100.0/gb_limit),
-        ])
-    report.append("Summary of storage usage for project %s\n" % project.name)
-    report.append(str(pt))
-
-    pt = prettytable.PrettyTable(('Project', 'vcpu hours', 'cpu time (hours)', 'ram (hours)', 'avg cpu %'))
-    pt.align['Project'] = 'l'
-    pt.align['vcpu hours'] = 'r'
-    pt.align['cpu time (hours)'] = 'r'
-    pt.align['ram (hours)'] = 'r'
-    pt.align['avg cpu %'] = 'r'
-
-    # cpu = get_ceilometer_metric(opts, 'cpu')
-    pt.add_row([project.name,
-                "%.2f" % nova_summary.total_vcpus_usage,
-                "%.2f" % (cpu_util.avg * nova_summary.total_vcpus_usage / 100),
-                # "%.2f" % (cpu[project].max/1e+9/60/60),
-                mib_to_str(nova_summary.total_memory_mb_usage),
-                "%.2f %%" % cpu_util.avg,
-            ])
-    report.append("\nSummary of usage for project %s\n" % project.name)
-    report.append(str(pt))
-
-    # Again, for each project and server
-    pt = prettytable.PrettyTable((
-        'instance UUID',
-        'instance name',
-        'flavor',
-        'vcpus',
-        'avg cpu %',
-        'cpu hours',
-        'cpu time',
-    ), print_empty=False)
-    pt.align['instance name'] = 'l'
-    pt.align['flavor'] = 'l'
-    pt.align['vcpus'] = 'r'
-    pt.align['avg cpu %'] = 'r'
-    pt.align['cpu hours'] = 'r'
-    pt.align['cpu time'] = 'r'
-
-    mycpu_util = {i.groupby['resource_id']:i for i in cpu_util_detailed}
-    # mycpu = {i.groupby['resource_id']:i for i in cpu if i.groupby['project_id'] == project_id}
-    for uuid in mycpu_util:
-        if uuid not in instances:
-            log.info("No detailed information for instance %s - skipping" % uuid)
-            continue
-        instance = instances[uuid]
-        cpuhours = instance['hours'] * instance['vcpus']
-        pt.add_row([uuid,
-                    instance['name'],
-                    instance['flavor'],
-                    instance['vcpus'],
-                    "%.2f %%" % mycpu_util[uuid].avg,
-                    "%.2f hours" % cpuhours,
-                    # This is a cumulative value, so we need to get the *max*
-                    # "%.2f hours" % (mycpu[uuid].max/1e+9/60/60),
-                    #
-                    # However, since this value is set to 0 when
-                    # the instance is migrated or stopped and
-                    # restarted, we better use the cpu_util
-                    # instead...
-                    "%.2f hours" % (mycpu_util[uuid].avg * cpuhours / 100),
-                    ])
-
+        ]
+        csvdata.append(row)
+        pt.add_row(row)
     table = str(pt)
     if table:
-        report.append("\nDetailed usage for project %s - currently running instances\n" % project.name)
-        report.append(str(table))
-    return str.join('\n', report)
+        report.append("Summary of storage usage for project %s\n" % project.name)
+        report.append(str(pt))
+    else:
+        report.append("No Cinder volumes used")
+    return (str.join('\n', report), {'summary': csvdata})
+
+def create_swift_report(project, swift_summary):
+    if not swift_summary or (swift_summary['objects'] ==  swift_summary['containers'] == 0):
+        return ("No SWIFT storage used", {'summary': []})
+
+    report = []
+    header = ['Project', 'objects', 'containers', 'bytes', 'quota', 'quota usage']
+    csvdata = [header]
+    pt = prettytable.PrettyTable(header)
+    for k in pt.align:
+        pt.align[k] = 'r'
+    pt.align['Project'] = 'l'
+
+    if swift_summary['quota'] > 1:
+        quota_p = "%.2f %%" % (float(swift_summary['bytes'])*100/int(swift_summary['quota']))
+    elif swift_summary['quota'] == 0:
+        quota_p = '100%'
+    else:
+        quota_p = '0%'
+    row = [project.name,
+           "%d (%s)" % (swift_summary['objects'], n_to_human(swift_summary['objects'])),
+           "%d (%s)" % (swift_summary['containers'], n_to_human(swift_summary['containers'])),
+           "%d (%s)" % (swift_summary['bytes'], b_to_human(swift_summary['bytes'])),
+           "%d (%s)" % (swift_summary['quota'],b_to_human(swift_summary['quota'])),
+           quota_p
+    ]
+    csvdata.append(row)
+    pt.add_row(row)
+    report.append("Summary of SWIFT storage for project %s\n" % project.name)
+    report.append(str(pt))
+
+    csvdata_detailed = []
+    if swift_summary['policies'] > 0:
+        header = ['Storage policy', 'bytes', 'objects']
+        csvdata_detailed = [header]
+        pt = prettytable.PrettyTable(header)
+        # pt = prettytable.PrettyTable(('Storage policy', 'bytes', 'objects', 'quota price', 'actual price'))
+        pt.align['Storage policy'] = 'l'
+        pt.align['bytes'] = 'r'
+        pt.align['objects'] = 'r'
+        # pt.align['quota price'] = 'r'
+        # pt.align['actual price'] = 'r'
+        for policy, data in swift_summary['policies'].items():
+            row = [policy,
+                   "%d (%s)" % (data['bytes-used'], b_to_human(data['bytes-used'])),
+                   "%d (%s)" % (data['object-count'], n_to_human(data['object-count'])),
+                   # compute_price_swift(swift_summary['quota']),
+                   # compute_price_swift(data['bytes-used'], policy),
+            ]
+            pt.add_row(row)            
+            csvdata_detailed.append(row)
+        report.append("")
+        report.append("Summary of SWIFT storage by storage policy for project %s\n" % project.name)
+        report.append(str(pt))
+
+    reportdata = {'summary': csvdata}    
+    if csvdata_detailed:
+        reportdata['detailed'] = csvdata_detailed
+    return (str.join('\n', report), reportdata)
+
 
 def main(opts):
     sess = make_session(opts)
@@ -348,18 +640,26 @@ def main(opts):
 
     log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
 
+    # Get usage from swift
+    swift_summary = get_swift_summary(opts, projects)
+
+    # Get summary from cinder
     cinder_summary = get_cinder_summary(opts, projects.values(), sess=sess)
 
     # Get usage from nova
     summary = get_nova_summary(opts, sess=sess)
     instances = {}
+
     for report in summary.values():
         instances.update({i['instance_id']: i for i in report.server_usages})
 
     log.debug("Getting detailed information for %s instances" % len(instances))
     # Get usage from ceilometer
-    cpu_util = get_ceilometer_metric(opts, 'cpu_util')
-    cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
+    cpu_util = []
+    cpu_util_detailed = []
+    if opts.ceilometer:
+        cpu_util = get_ceilometer_metric(opts, 'cpu_util')
+        cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
 
     # Get summary from cinder
 
@@ -367,22 +667,48 @@ def main(opts):
     # all_reports is used to send a single report with all information to the ADMIN_RECIPIENT
     all_reports = {}
     for project in projects.values():
-        if project.id not in summary or project.id not in cpu_util:
+        if project.id not in summary or (cpu_util and project.id not in cpu_util):
             log.warn("No detailed report for project %s: skipping" % project.name)
             continue
-        try:
-            report = create_report_for_project(project,
-                                               summary[project.id],
-                                               cinder_summary[project.id],
-                                               instances,
-                                               cpu_util[project.id],
-                                               [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
-                                           # [],
-                                           # [])
-            all_reports[project.id] = report
-        except Exception as ex:
-            log.error("Error creating report for project %s: %s", project.name, ex)
+        # try:
+        if True:
+            streport = ''
+            creport, cdata = create_cinder_report(project, cinder_summary[project.id])
+            streport += creport
+            if opts.ceilometer:
+                nreport, ndata = create_nova_ceilometer_report(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
+            else:
+                nreport, ndata = create_nova_report(project, summary[project.id], dict([(k,v) for k,v in instances.items() if v['tenant_id'] == project.id]))
+            sreport, sdata = create_swift_report(project, swift_summary.get(project.id))
+            all_reports[project.id] = {'msg': str.join('\n\n', [creport, sreport, nreport]),
+                                       'nova': ndata,
+                                       'cinder': cdata,
+                                       'swift': sdata}
+        # except Exception as ex:
+        #     log.error("Error creating report for project %s: %s", project.name, ex)
 
+    # Save data
+    for service in ['nova', 'cinder', 'swift']:
+        for reportype in ['summary', 'detailed']:
+            if not [i for i in all_reports.values() if reportype in i[service]]:
+                # No `reportype` report for this service: skip it
+                continue
+            fname = os.path.join(opts.csvdir, "%s-%s_%s-%s.csv" % (
+                service, reportype, opts.start, opts.end))
+            write_header = True
+            with open(fname, 'w') as fd:
+                writer = csv.writer(fd)
+                for project_id, report in all_reports.items():
+                    pname = projects.get(project_id).name
+                    if write_header:
+                        writer.writerow(['Project'] + report[service][reportype][0])
+                        write_header = False
+                    if not report[service] or reportype not in  report[service]:
+                        continue
+                    for row in report[service][reportype][1:]:
+                        writer.writerow([pname] + row)
+
+    # Send emails, if requested
     if opts.send_mail:
         try:
             send_mail_to(opts.smtp,
@@ -412,14 +738,15 @@ def main(opts):
                                      opts.mail_from,
                                      recipient,
                                      "%s usage for project %s from %s to %s" % (opts.cloud_name, pdict['name'], opts.start, opts.end),
-                                     report)
+                                     report['msg'])
                     except Exception as ex:
                         log.error(
                             "Unable to send report email for project %s to"
                             " recipient %s: %s", pdict['name'], recipient, ex)
     else:
         for project_id, report in all_reports.items():
-            print(report)
+            print("="*80)
+            print(report['msg'])
             print("")
 
 if __name__ == "__main__":
