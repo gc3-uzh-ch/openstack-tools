@@ -253,6 +253,8 @@ def update_nova_quota(opts, project):
     return _update_quota(project.id, opts, quota_names, client, 'NOVA')
 
 def update_swift_quota(opts, project):
+    if not opts.s_gigabytes:
+        return ""
     sess = make_session(opts)
     kclient = keystone_client.Client(session=sess)
     token = sess.get_token()
@@ -270,7 +272,7 @@ def update_swift_quota(opts, project):
         log.error("Unable to get information on SWIFT project %s: %s", project.id, ex)
         return ''
     currquota = int(account.get('x-account-meta-quota-bytes', -1))
-    log.debug("Current SWIFT for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
+    log.debug("Current SWIFT quota for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
     func, value = opts.s_gigabytes
     # Value is supposed to be in gigabibytes, convert it to bytes
     oldvalue = value*(2**30)
