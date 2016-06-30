@@ -157,6 +157,8 @@ def setup():
                         required=True,
                         help='Email address of the S3IT Project Owner.')
 
+    parser.add_argument('--institute', default='N/A', help='UZH Institute this project belongs to')
+    parser.add_argument('--faculty', default='N/A', help='UZH Faculty this project belongs to')
     parser.add_argument('--no-verify-email',
                         action='store_true',
                         help='Do not attempt to verify that email addresses '
@@ -205,6 +207,8 @@ def create_project(opts, sess):
                                        owner_email=opts.owner_email,
                                        s3it_owner=opts.s3it_owner,
                                        s3it_owner_email=opts.s3it_owner_email,
+                                       institute=opts.institute,
+                                       faculty=opts.faculty,
                                        created=asciinow)
 
     print("Adding current user (%s) to tenant %s" % (opts.os_username, opts.name))
