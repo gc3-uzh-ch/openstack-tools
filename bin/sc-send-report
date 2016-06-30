@@ -129,8 +129,8 @@ def make_session(opts):
                        username=opts.os_username,
                        password=opts.os_password,
                        project_name=opts.os_project_name,
-                       user_domain_id=opts.os_user_domain_id,
-                       project_domain_id=opts.os_project_domain_id)
+                       user_domain_name=opts.os_user_domain_name,
+                       project_domain_name=opts.os_project_domain_name)
     sess = session.Session(auth=auth)
     return sess
 
@@ -194,6 +194,14 @@ def setup():
     parser.add_argument('--os-project-domain-id',
                         action=EnvDefault,
                         envvar="OS_PROJECT_DOMAIN_ID",
+                        default='default')
+    parser.add_argument('--os-user-domain-name',
+                        action=EnvDefault,
+                        envvar="OS_USER_DOMAIN_NAME",
+                        default='default')
+    parser.add_argument('--os-project-domain-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_DOMAIN_NAME",
                         default='default')
     parser.add_argument('--send-mail',
                         action='store_true',
@@ -268,8 +276,8 @@ def make_ceilometer_client(opts):
         os_password=opts.os_password,
         os_tenant_name=opts.os_project_name,
         os_auth_url=opts.os_auth_url,
-        os_project_domain_id='default',
-        os_user_domain_id='default')
+        os_project_domain_name=opts.os_project_domain_name,
+        os_user_domain_name=opts.os_user_domain_name)
     return cclient
 
 def get_nova_summary(opts, sess=None):
@@ -337,9 +345,9 @@ class SwiftChecker(mp.Process):
             key=self.opts.os_password,
             os_options={"auth_url": self.opts.os_auth_url,
                         "project_name": self.opts.os_project_name,
-                        "project_domain_id": self.opts.os_project_domain_id,
+                        "project_domain_name": self.opts.os_project_domain_name,
                         "username": self.opts.os_username,
-                        "user_domain_id": self.opts.os_user_domain_id,
+                        "user_domain_name": self.opts.os_user_domain_name,
                         "password": self.opts.os_password,
                         "object_storage_url": project['storage_url'],},
             auth_version='3')
@@ -411,7 +419,7 @@ def create_nova_report(project, nova_summary, instances):
     pt = prettytable.PrettyTable(header)
     pt.align['vcpu hours'] = 'r'
     pt.align['ram (hours)'] = 'r'
-    
+
     row = ["%.2f" % nova_summary.total_vcpus_usage,
            # "%.2f" % (cpu[project].max/1e+9/60/60),
            mib_to_str(nova_summary.total_memory_mb_usage),
@@ -452,7 +460,7 @@ def create_nova_report(project, nova_summary, instances):
         report.append("")
         report.append("Detailed usage for project %s - currently running instances\n" % project.name)
         report.append(str(table))
-    
+
 
     return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed})
 
@@ -491,7 +499,7 @@ def create_nova_ceilometer_report(project, nova_summary, instances, cpu_util, cp
         'cpu hours',
         'cpu time',
     ]
-    
+
     csvdata_detailed.append(header_detailed)
     pt = prettytable.PrettyTable(header_detailed, print_empty=False)
     pt.align['instance name'] = 'l'
@@ -500,7 +508,7 @@ def create_nova_ceilometer_report(project, nova_summary, instances, cpu_util, cp
     pt.align['avg cpu %'] = 'r'
     pt.align['cpu hours'] = 'r'
     pt.align['cpu time'] = 'r'
-    
+
     mycpu_util = {i.groupby['resource_id']:i for i in cpu_util_detailed}
     # mycpu = {i.groupby['resource_id']:i for i in cpu if i.groupby['project_id'] == project_id}
     for uuid in mycpu_util:
@@ -569,7 +577,7 @@ def create_cinder_report(project, cinder_summary):
 
 def create_swift_report(project, swift_summary):
     if not swift_summary or (swift_summary['objects'] ==  swift_summary['containers'] == 0):
-        return ("No SWIFT storage used", {'summary': []})
+        return ("No SWIFT storage used", {})
 
     report = []
     header = ['objects', 'containers', 'bytes', 'quota', 'quota usage']
@@ -619,13 +627,13 @@ def create_swift_report(project, swift_summary):
                    # compute_price_swift(swift_summary['quota']),
                    # compute_price_swift(data['bytes-used'], policy),
             ]
-            pt.add_row(row)            
+            pt.add_row(row)
             csvdata_detailed.append([policy, data['bytes-used'], data['object-count']])
         report.append("")
         report.append("Summary of SWIFT storage by storage policy for project %s\n" % project.name)
         report.append(str(pt))
 
-    reportdata = {'summary': csvdata}  
+    reportdata = {'summary': csvdata}
     if csvdata_detailed:
         reportdata['detailed'] = csvdata_detailed
     return (str.join('\n', report), reportdata)
@@ -699,21 +707,21 @@ def main(opts):
                 continue
             fname = os.path.join(opts.csvdir, "%s-%s_%s-%s.csv" % (
                 service, reportype, opts.start, opts.end))
-            if reportype == 'detailed':
-                import pdb; pdb.set_trace()
             write_header = True
-            with open(fname, 'w') as fd:
-                writer = csv.writer(fd)
-                for project_id, report in all_reports.items():
-                    pname = projects.get(project_id).name
-                    if write_header:
-                        writer.writerow(['Project'] + report[service][reportype][0])
-                        write_header = False
-                    if not report[service] or reportype not in  report[service]:
-                        continue
-                    for row in report[service][reportype][1:]:
-                        writer.writerow([pname] + row)
-
+            try:
+                with open(fname, 'w') as fd:
+                    writer = csv.writer(fd)
+                    for project_id, report in all_reports.items():
+                        pname = projects.get(project_id).name
+                        if write_header:
+                            writer.writerow(['Project'] + report[service][reportype][0])
+                            write_header = False
+                        if not report[service] or reportype not in  report[service]:
+                            continue
+                        for row in report[service][reportype][1:]:
+                            writer.writerow([pname] + row)
+            except Exception as ex:
+                import pdb; pdb.set_trace()
     # Send emails, if requested
     if opts.send_mail:
         try:
