@@ -709,7 +709,8 @@ def main(opts):
                 service, reportype, opts.start, opts.end))
             write_header = True
             try:
-                os.makedirs(os.path.dirname(fname))
+                if nto os.path.isdir(os.path.dirname(fname)):
+                    os.makedirs(os.path.dirname(fname))
                 with open(fname, 'w') as fd:
                     writer = csv.writer(fd)
                     for project_id, report in all_reports.items():
