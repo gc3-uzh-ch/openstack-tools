@@ -31,18 +31,15 @@ import os
 import subprocess as sp
 import sys
 
-try:
-    from keystoneclient.auth.identity import v3
-    from keystoneclient import session
-    from keystoneclient.v3 import client as keystone_client
-except ImportError:
-    pass
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
 
 from novaclient import client as nova_client
 
 
 log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
+
 
 class EnvDefault(argparse.Action):
     # This is took from
@@ -59,28 +56,20 @@ class EnvDefault(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, values)
 
-def run_command(cmd, debug=False):    
+def run_command(cmd, debug=False):
     if debug:
         print(str.join(" ", cmd))
     else:
         sp.call(cmd)
 
-def memoize(f):
-    memo = {}
-    def helper(x):
-        if f not in memo:
-            memo[f] = f(x)
-        return memo[f]
-    return helper
-
-@memoize
 def make_session(opts):
     """Create a Keystone session"""
     auth = v3.Password(auth_url=opts.os_auth_url,
-                       user_id=opts.os_username,
+                       username=opts.os_username,
                        password=opts.os_password,
                        project_name=opts.os_project_name,
-                       project_domain_name='default')
+                       user_domain_name=opts.os_user_domain_name,
+                       project_domain_name=opts.os_project_domain_name)
     sess = session.Session(auth=auth)
     return sess
 
@@ -93,9 +82,15 @@ if __name__ == "__main__":
     parser.add_argument('--os-password', action=EnvDefault, envvar="OS_PASSWORD",
                         help='OpenStack administrator password. If not supplied, the value of the '
                         '"OS_PASSWORD" environment variable is used.')
-    parser.add_argument('--os-tenant-name', action=EnvDefault, envvar="OS_TENANT_NAME",
-                        help='OpenStack administrator tenant name. If not supplied, the value of the '
-                        '"OS_TENANT_NAME" environment variable is used.')
+    parser.add_argument('--os-project-name', action=EnvDefault, envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-user-domain-name',
+                        action=EnvDefault,
+                        envvar="OS_USER_DOMAIN_NAME")
+    parser.add_argument('--os-project-domain-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_DOMAIN_NAME")
     parser.add_argument('--os-auth-url', action=EnvDefault, envvar="OS_AUTH_URL",
                         help='OpenStack auth url endpoint. If not supplied, the value of the '
                         '"OS_AUTH_URL" environment variable is used.')
@@ -114,7 +109,6 @@ if __name__ == "__main__":
     parser.add_argument('--max-vms', type=int, default=1200, help="Value for option `--tmax` of gmetric command. Default: %(default)s")
     parser.add_argument('--max-vcpus', default=1200, help="Value of option `--group` of gmetric command. Default: %(default)s")
     parser.add_argument('--silent', action='store_true', default=False, help='Ignore any error.')
-    parser.add_argument('--os-compute-api-version', default='1.1', choices=['1.1', '2'], help='Define compute api version to use. Please note that API version v2 assumes Keystone API version 3.')
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
 
@@ -124,26 +118,19 @@ if __name__ == "__main__":
     verbosity = max(0, 3-args.verbose) * 10
     log.setLevel(verbosity)
 
-    if args.os_compute_api_version == '1.1':
-        nclient = nova_client.Client('1.1', args.os_username,
-                                     args.os_password,
-                                     args.os_tenant_name,
-                                     args.os_auth_url)
-    else:
-        args.os_project_name = args.os_tenant_name
-        sess = make_session(args)
-        nclient = nova_client.Client('2', session=sess)
+    sess = make_session(args)
+    nclient = nova_client.Client('2', session=sess)
     all_vms = nclient.servers.list(search_opts={'all_tenants':True})
     flavors = { flv.id: flv for flv in nclient.flavors.list(is_public=None)}
-    if args.os_compute_api_version != '1.1':
-        try:
-            # Get the total number of vcpus, if possible        
-            args.max_vcpus = nclient.hypervisors.statistics().vcpus
-            args.max_vms = args.max_vcpus * 24 # Sensible value, but totally made up :)
-        except:
-            pass
-                
-    
+    try:
+        # Get the total number of vcpus, if possible
+        args.max_vcpus = nclient.hypervisors.statistics().vcpus
+        args.max_vms = args.max_vcpus * 24 # Sensible value, but totally made up :)
+    except Exception as ex:
+        log.warning("Unable to get statistics from the hypervisors: %s", ex)
+
+
+
     for status in ['active', 'error', 'building', 'shutoff']:
         if not getattr(args, status):
             continue
