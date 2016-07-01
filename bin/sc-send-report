@@ -709,6 +709,7 @@ def main(opts):
                 service, reportype, opts.start, opts.end))
             write_header = True
             try:
+                os.makedirs(os.path.dirname(fname))
                 with open(fname, 'w') as fd:
                     writer = csv.writer(fd)
                     for project_id, report in all_reports.items():
@@ -721,7 +722,7 @@ def main(opts):
                         for row in report[service][reportype][1:]:
                             writer.writerow([pname] + row)
             except Exception as ex:
-                import pdb; pdb.set_trace()
+                log.error("Exception while opening file %s: %s", fname, ex)
     # Send emails, if requested
     if opts.send_mail:
         try:
