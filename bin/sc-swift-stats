@@ -168,7 +168,7 @@ def list_projects(opts):
     for project in projects.values():
         project['storage_url'] = swift_endpoint.url % {'tenant_id':project['id']}
     return projects
-    
+
 class SwiftChecker(mp.Process):
     def __init__(self, tasks, results, opts):
         mp.Process.__init__(self)
@@ -189,7 +189,8 @@ class SwiftChecker(mp.Process):
             report['project'] = project
             self.results.put(report)
             self.tasks.task_done()
-    
+            log.info("Done with project %s", project['name'])
+
     def get_swift_stats(self, project):
         log.info("Checking swift for project %s", project['name'])
         conn = swiftclient.Connection(
@@ -218,7 +219,7 @@ class SwiftChecker(mp.Process):
             if m:
                 policies[m.group('policy')][m.group('value')] = int(value)
 
-        log.info("REPORT: %s", acc_report)
+        log.info("REPORT project %s: %s", project['name'], acc_report)
         return acc_report
 
 def save_report(reports, opts):
@@ -260,13 +261,14 @@ def main(opts):
 
     log.info("Joining task queue")
     tasks.join()
-    log.info("Terminating consumers")
-    [w.terminate() for w in consumers]
-    reports = []    
-    while not results.empty():
-        reports.append(results.get())
 
+    log.info("Terminating consumers")
+    reports = []
+
+    for i in projects:
+        reports.append(results.get())
     save_report(reports, opts)
+    print("Stats saved into %s file" % opts.output)
 
 
 if __name__ == "__main__":
