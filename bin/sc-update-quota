@@ -220,8 +220,8 @@ def _update_quota(projectid, opts, names, client, servicename):
         if not opts.dry_run:
             client.quotas.update(projectid, **quota_update)
         else:
-            print("Updating %s quota. %s" % (servicename, str(quota_update)))
-        log.info("Updating %s quota. %s" % (servicename, str(quota_update)))
+            print("Updating %s quota. %s => %s" % (servicename, str({k:v for k,v in old_quota.to_dict().items() if k in quota_update}), str(quota_update)))
+        log.info("Updating %s quota. %s => %s" % (servicename, str(old_quota), str(quota_update)))
         return '(%s) %s: %s\n' % (opts.date, servicename, str.join(', ', changelog))
     else:
         return ''
@@ -365,7 +365,7 @@ def update_neutron_quota(opts, project):
         if not opts.dry_run:
             client.update_quota(project.id, {'quota': quota_update})
         else:
-            print("Updating %s quota. %s" % (servicename, str(quota_update)))
+            print("Updating %s quota. %s => %s" % (servicename, {k:v for k,v in old_quota.items() if k in quota_update}, str(quota_update)))
         log.info("Updating %s quota. %s" % (servicename, str(quota_update)))
         return '(%s) %s: %s\n' % (opts.date, servicename, str.join(', ', changelog))
     else:
