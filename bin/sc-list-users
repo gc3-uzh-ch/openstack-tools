@@ -119,6 +119,7 @@ def setup(argv=sys.argv[1:]):
                         help='Increase verbosity')
     parser.add_argument('--project')
     parser.add_argument('--user')
+    parser.add_argument('--show-email', default=False, action='store_true')
     opts = parser.parse_args(argv)
 
     # Set verbosity
@@ -152,6 +153,7 @@ def main(opts):
         else:
             role_assignment = kclient.role_assignments.list()
 
+
     project_mapping = defaultdict(list)
     user_mapping = defaultdict(list)
 
@@ -164,75 +166,111 @@ def main(opts):
                                        'role': rolename})
         project_mapping[project].append({'user': username,
                                        'role': rolename})
+    all_emails = {}
+    if opts.show_email:
+        for uid in user_mapping:
+            try:
+                user = kclient.users.get(uid)
+                all_emails[uid] = user.email
+            except Exception as ex:
+                log.warning("Unable to find user %s: %s", uid, ex)
+                all_emails[uid] = 'UNKNOWN_USER'
 
-    return (user_mapping, project_mapping)
+    return (user_mapping, project_mapping, all_emails)
 
-def print_projects(project_mapping, opts):
-    if opts.format == 'text':
-        print_projects_text(project_mapping)
-    elif opts.format == 'csv':
-        print_projects_csv(project_mapping)
-    elif opts.format == 'table':
-        print_projects_table(project_mapping)
-
-def print_users(user_mapping, opts):
-    if opts.format == 'text':
-        print_users_text(user_mapping)
-    elif opts.format == 'csv':
-        print_users_csv(user_mapping)
-    elif opts.format == 'table':
-        print_users_table(user_mapping)
-
-def print_projects_text(project_mapping):
+def print_projects(project_mapping, opts, emails):
+    header = ['Project', 'User', 'Role']
+    rows = []
+    if emails:
+        header.append('User email')
     for project, role in sorted(project_mapping.items()):
-        print("project: %s" % project)
         for user in sorted(role):
-            print("  %s is %s" % (user['user'], user['role']))
+            row = [project, user['user'], user['role']]
+            if emails:
+                row.append(emails[user['user']])
+            rows.append(row)
 
-def print_projects_table(project_mapping):
-    pt = prettytable.PrettyTable(('Project', 'User', 'Role'))
+    if opts.format == 'text':
+        print_projects_text(header, rows)
+    elif opts.format == 'csv':
+        print_projects_csv(header, rows)
+    elif opts.format == 'table':
+        print_projects_table(header, rows)
+
+def print_users(user_mapping, opts, emails):
+    header = ['User', 'Project', 'Role']
+    rows = []
+    if emails:
+        header.append('User email')
+    for user, projects in sorted(user_mapping.items()):
+        for project in sorted(projects, key=lambda x: x['project']):
+            row = [user, project['project'], project['role']]
+            if emails:
+                row.append(emails[user])
+            rows.append(row)
+        
+    if opts.format == 'text':
+        print_users_text(header, rows)
+    elif opts.format == 'csv':
+        print_users_csv(header, rows)
+    elif opts.format == 'table':
+        print_users_table(header, rows)
+
+def print_projects_text(header, rows):
+    project = ''
+    for row in rows:
+        if project != row[0]:
+            project = row[0]
+            print project
+        extra = ''
+        if len(row) > 3:
+            extra = ' ' + str.join(', ', row[3:])
+        
+        print "  %s (%s)%s" % (row[1], row[2], extra)
+
+def print_projects_table(header, rows):
+    pt = prettytable.PrettyTable(header)
     pt.align['Project'] = 'l'
-    for project, role in sorted(project_mapping.items()):
-        for user in sorted(role):
-            pt.add_row([project, user['user'], user['role']])
+    for row in rows:
+        pt.add_row(row)
     print(pt)
 
-def print_projects_csv(project_mapping):
+def print_projects_csv(header, rows):
     writer = csv.writer(sys.stdout)
-    writer.writerow(('Project', 'User', 'Role'))
-    for project, role in sorted(project_mapping.items()):
-        for user in sorted(role):
-            writer.writerow([project, user['user'], user['role']])
+    writer.writerow([header])
+    writer.writerows(rows)
 
-def print_users_text(user_mapping):
-    for user, projects in sorted(user_mapping.items()):
-        print(user)
-        for project in sorted(projects, key=lambda x: x['project']):
-            print("  %s (%s)" % (project['project'], project['role']))
+def print_users_text(header, rows):
+    user = ''
+    for row in rows:
+        if user != row[0]:
+            user = row[0]
+            print user
+        extra = ''
+        if len(row) > 3:
+            extra = ' ' + str.join(', ', row[3:])
+        print("  %s (%s)%s" % (row[1], row[2], extra))
 
-def print_users_table(user_mapping):
-    pt = prettytable.PrettyTable(('User', 'Project', 'Role'))
+def print_users_table(header, rows):
+    pt = prettytable.PrettyTable(header)
     pt.align['User'] = 'l'
-    for user, projects in sorted(user_mapping.items()):
-        for project in sorted(projects, key=lambda x: x['project']):
-            pt.add_row([user, project['project'], project['role']])
+    for row in rows:
+        pt.add_row(row)
     print(pt)
 
-def print_users_csv(user_mapping):
+def print_users_csv(header, rows):
     writer = csv.writer(sys.stdout)
-    writer.writerow(('User', 'Project', 'Role'))
-    for user, projects in sorted(user_mapping.items()):
-        for project in sorted(projects, key=lambda x: x['project']):
-            writer.writerow([user, project['project'], project['role']])
+    writer.writerow(header)
+    writer.writerows(rows)
 
 if __name__ == "__main__":
     (opts, parser) = setup()
     try:
-        user_mapping, project_mapping = main(opts)
+        user_mapping, project_mapping, emails = main(opts)
     except (ProjectNotFound, UserNotFound) as ex:
         parser.error(ex)
 
     if opts.user:
-        print_projects(project_mapping, opts)
+        print_projects(project_mapping, opts, emails)
     else:
-        print_users(user_mapping, opts)
+        print_users(user_mapping, opts, emails)
