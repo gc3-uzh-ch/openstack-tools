@@ -17,7 +17,11 @@ correct and re-used.
 
 Options:
 
-  --show, -s  Show 'export' commands instead of executing them.
+  -k, --keep  If environment variables 'OS_PROJECT_NAME' or
+              'OS_USERNAME' are defined, keep that value
+              and do not prompt for overwriting.
+
+  -s, --show  Show 'export' commands instead of executing them.
 
   -2          Use endpoints for Keystone API v3 (default)
 
@@ -90,8 +94,8 @@ is_absolute_path () {
 
 ## parse command-line
 
-short_opts='23hs'
-long_opts='help,show,v2,v3'
+short_opts='23hks'
+long_opts='help,keep,show,v2,v3'
 
 # test which `getopt` version is available:
 # - GNU `getopt` will generate no output and exit with status 4
@@ -117,6 +121,7 @@ fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --keep|-k) keep='yes' ;;
         --show|-s) show='echo' ;;
         --v2|-2)   use_keystone_api_v3='no' ;;
         --v3|-3)   use_keystone_api_v3='yes' ;;
@@ -133,14 +138,20 @@ require_command printf stty
 
 # set OS_PROJECT_NAME
 if [ -n "$1" ]; then
+    # project name given on command-line, max priority
     os_project_reply="$1"
+elif [ "$keep" = 'yes' ] && [ -n "$OS_PROJECT_NAME" ]; then
+    os_project_reply="$OS_PROJECT_NAME"
 else
     os_project_reply=$(ask "Please enter your ScienceCloud project name" "${OS_PROJECT_NAME:-$os_project_default}")
 fi
 
 # set OS_USERNAME
 if [ -n "$2" ]; then
+    # user name given on command-line, max priority
     os_username_reply="$2"
+elif [ "$keep" = 'yes' ] && [ -n "$OS_USERNAME" ]; then
+    os_username_reply="$OS_USERNAME"
 else
     os_username_reply=$(ask "Please enter your ScienceCloud username" "${OS_USERNAME:-$os_username_default}")
 fi
