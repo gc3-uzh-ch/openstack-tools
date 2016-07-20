@@ -161,6 +161,7 @@ if [ -z "$OS_PASSWORD" ]; then
     stty -echo
     os_password_reply=$(ask "Please enter your OpenStack Password")
     stty echo
+    echo
 fi
 
 # all output at the end
