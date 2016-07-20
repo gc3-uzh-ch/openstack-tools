@@ -193,6 +193,7 @@ def main(opts):
     #stats = nova.hypervisors_stats.statistics()
     aggregates = nova.aggregates.list()
     hypervisors = nova.hypervisors.list()
+
     for hyp in hypervisors:
         # Set the proper allocation ratio, depending on the aggregate
         hyp.cpu_allocation_ratio = 1.0
@@ -238,10 +239,13 @@ def main(opts):
     pt.align['flavor'] = 'l'
 
     # For each flavor, check how many can be ran
+    enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
+    if len(enabled_hypervisors) != hypervisors:
+        log.warning("Ignoring %d disabled hypervisors" % (len(hypervisors) - len(enabled_hypervisors)))
     for flavor in nova.flavors.list():
         flavor = ProxyFlavor(flavor)
         log.debug("Computing capability for flavor %s" % flavor.name)
-        maxf, availf = compute_capability(flavor, hypervisors)
+        maxf, availf = compute_capability(flavor, enabled_hypervisors)
         pt.add_row([flavor.name,
                    len([vm for vm in all_vms if vm.flavor['id'] == flavor.id]),
                    maxf,
