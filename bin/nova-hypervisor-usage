@@ -233,13 +233,30 @@ def main(opts):
                 ])
         print(pt.get_string(sortby='Hostname'))
 
+
+    enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
+
+    pt = prettytable.PrettyTable(('property','value'))
+    pt.align['property'] = 'l'
+    pt.align['value'] = 'r'
+    pt.add_row(['hypervisors',len(hypervisors)])
+    pt.add_row(['hypervisors enabled',len(enabled_hypervisors)])
+    pt.add_row(['vcpus', sum(h.vcpus for h in hypervisors)])
+    avail_cpus = sum(h.vcpus for h in enabled_hypervisors)
+    used_cpus = sum(h.vcpus_used for h in hypervisors)
+    pt.add_row(['available vcpus', avail_cpus])
+    pt.add_row(['free vcpus', sum(h.vcpus_free for h in enabled_hypervisors)])
+    pt.add_row(['used vcpus', used_cpus])
+    pt.add_row(['vcpus usage %%', '%.2f %%' % (float(used_cpus)/avail_cpus*100)])
+    pt.add_row(['vms', len(all_vms)])
+    print(pt)
+
     pt = prettytable.PrettyTable(('flavor', 'current', 'max', 'avail'))
     for field in pt.field_names:
         pt.align[field] = 'r'
     pt.align['flavor'] = 'l'
 
     # For each flavor, check how many can be ran
-    enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
     if len(enabled_hypervisors) != hypervisors:
         log.warning("Ignoring %d disabled hypervisors" % (len(hypervisors) - len(enabled_hypervisors)))
     for flavor in nova.flavors.list():
