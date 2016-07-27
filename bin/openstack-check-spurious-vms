@@ -217,6 +217,7 @@ def main(opts):
 
     # Get all instances
     vms = client.servers.list(search_opts={'all_tenants': 'True'})
+    log.info("Found %d VMs", len(vms))
     vms_by_id = {getattr(i, 'OS-EXT-SRV-ATTR:instance_name'): i for i in vms}
     instances_by_host = defaultdict(list)
     for vm in vms:
@@ -230,6 +231,7 @@ def main(opts):
     jobs = []
     log.debug("Spanwing %d jobs: %s", len(compute_nodes), str.join(', ', sorted([i.host for i in compute_nodes])))
     idx = 0
+
     for node in sorted(compute_nodes, key=lambda x: x.host):
         host = node.host
         job = RunVirsh(host, opts.sshopts, queue)
@@ -277,8 +279,21 @@ def main(opts):
                         # two instances with the same name, one
                         # (active) on the source host, and the other
                         # (paused) on the destination host.
-                        log.error("Instance %s (%s) should run on %s but it's running on %s instead",
-                                  nova_vm.id, vmid, host, getattr(nova_vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname'))
+                        other_host = getattr(nova_vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname')
+                        log.error("Instance %s (%s) is in '%s' on hypervisor %s, but DB says it should run on %s instead",
+                                  nova_vm.id, vmid, vmstate, host, other_host)
+                        other_host_vms = {i['name']:i for i in vms_on_host[other_host]}
+                        if vmid in other_host_vms and vmstate != 'pause':
+                            log.error("  vm %s is in status %s on host %s, killing instance on  %s",
+                                      vmid,other_host_vms[vmid]['state'], other_host, host)
+                            if vmstate == "shut off":
+                                maybe_undefine_instance(opts.kill, host, opts.sshopts, vmid)
+                            else:
+                                maybe_kill_instance(opts.kill, host, opts.sshopts, vmid)
+                                maybe_undefine_instance(opts.kill, host, opts.sshopts, vmid)
+                        else:
+                            log.error("  vm %s not running on %s => please update DB", vmid, other_host)
+
                     else:
                         log.error("Instance name %s %s on %s but not found in database", vmid, vmstate, host)
                         if vmstate == "shut off":
