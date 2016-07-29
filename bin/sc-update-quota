@@ -262,6 +262,7 @@ def update_swift_quota(opts, project):
         swift_service = kclient.services.find(type='object-store')
         swift_endpoint = kclient.endpoints.find(service_id=swift_service.id, interface='public')
         storage_url = swift_endpoint.url % dict(tenant_id=project.id)
+        log.info("Using swift storage_url %s", storage_url)
     except Exception as ex:
         log.error("No swift endpoint found. (exception was: %s", ex)
         return ''
@@ -272,15 +273,14 @@ def update_swift_quota(opts, project):
         log.error("Unable to get information on SWIFT project %s: %s", project.id, ex)
         return ''
     currquota = int(account.get('x-account-meta-quota-bytes', -1))
-    log.debug("Current SWIFT quota for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
+    log.info("Current SWIFT quota for project %s: %d bytes (%d GB)", project.name, currquota, currquota/2**30)
     func, value = opts.s_gigabytes
     # Value is supposed to be in gigabibytes, convert it to bytes
-    oldvalue = value*(2**30)
-    newvalue = func(currquota, oldvalue)
+    newvalue = func(currquota, value*2**30)
     delta = newvalue-currquota
     if currquota != -1 and delta == 0:
         log.info("Not updating quota for SWIFT as %s == %s",
-                 oldvalue, newvalue)
+                 currquota, newvalue)
         return ''
     try:
         if not opts.dry_run:
@@ -288,8 +288,8 @@ def update_swift_quota(opts, project):
                                      token=token,
                                      headers={'x-account-meta-quota-bytes': newvalue})
         else:
-            print("Updating SWIFT quota %s => %s" % (oldvalue, newvalue))
-        log.info("Updating SWIFT quota %s => %s", oldvalue, newvalue)
+            print("Updating SWIFT quota %s => %s" % (currquota, newvalue))
+        log.info("Updating SWIFT quota %s => %s", currquota, newvalue)
     except Exception as ex:
         log.error("Failed to set SWIFT quota %s to tenant %s: %s",
                   newvalue, project.name, ex)
