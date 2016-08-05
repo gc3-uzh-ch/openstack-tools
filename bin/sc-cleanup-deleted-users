@@ -1,0 +1,230 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""Tool to increase the quota of a project and keep track of the
+changes using a property in the project itself.
+"""
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import logging
+import os
+import sys
+
+from keystoneclient.auth.identity import v3
+from keystoneclient import session
+from keystoneclient.v3 import client as keystone_client
+try:
+    # old package name
+    import keystoneclient.openstack.common.apiclient.exceptions as kex
+except ImportError:
+    import keystoneclient.exceptions as kex
+
+from novaclient import client as nova_client
+from cinderclient import client as cinder_client
+from glanceclient import client as glance_client
+import cinderclient.exceptions as cex
+from neutronclient.v2_0 import client as neutron_client
+
+import swiftclient
+
+log = logging.getLogger()
+#log.addHandler(logging.StreamHandler())
+
+
+
+def memoize(f):
+    memo = {}
+    def helper(x):
+        if f not in memo:
+            memo[f] = f(x)
+        return memo[f]
+    return helper
+
+
+@memoize
+def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       username=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       user_domain_id=opts.os_user_domain_id,
+                       project_domain_id=opts.os_project_domain_id)
+    sess = session.Session(auth=auth)
+    return sess
+
+
+class EnvDefault(argparse.Action):
+    # This is took from
+    # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
+    def __init__(self, envvar, required=True, default=None, **kwargs):
+        if not default and envvar:
+            if envvar in os.environ:
+                default = os.environ[envvar]
+        if required and default:
+            required = False
+        super(EnvDefault, self).__init__(default=default, required=required,
+                                         **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+
+
+def setup(argv=sys.argv[1:]):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--os-username',
+                        action=EnvDefault,
+                        envvar="OS_USERNAME",
+                        help='OpenStack administrator username. If not supplied, the value of the '
+                        '"OS_USERNAME" environment variable is used.')
+    parser.add_argument('--os-password',
+                        action=EnvDefault,
+                        envvar="OS_PASSWORD",
+                        help='OpenStack administrator password. If not supplied, the value of the '
+                        '"OS_PASSWORD" environment variable is used.')
+    parser.add_argument('--os-project-name',
+                        action=EnvDefault,
+                        envvar="OS_PROJECT_NAME",
+                        help='OpenStack administrator project name. If not supplied, the value of the '
+                        '"OS_PROJECT_NAME" environment variable is used.')
+    parser.add_argument('--os-auth-url',
+                        action=EnvDefault,
+                        envvar="OS_AUTH_URL",
+                        help='OpenStack auth url endpoint. If not supplied, the value of the '
+                        '"OS_AUTH_URL" environment variable is used.')
+    parser.add_argument('--os-user-domain-id',
+                        default='default')
+    parser.add_argument('--os-project-domain-id',
+                        default='default')
+
+    parser.add_argument('--kill', action='store_false', default=True, dest='dry_run',
+                        help='By default resources are not deleted. Run with --kill to delete them')
+    parser.add_argument('-v', '--verbose', action='count', default=0,
+                        help='Increase verbosity')
+    parser.add_argument('-n', '--dry-run', action='store_true',
+                        help='Do not actually change anything, only show what would be changed')
+
+    opts = parser.parse_args(argv)
+
+    # Set verbosity
+    verbosity = max(0, 3-opts.verbose) * 10
+    log.setLevel(verbosity)
+    return opts
+
+def maybe_delete_server(session, servers, dry_run=True):
+    nova = nova_client.Client('2.1', session=session)
+
+    for server in servers:
+        log.info("VM %s (%s) to be killed", server.id, server.name)
+        if dry_run:
+            log.info("DRY-RUN: not killing VM")
+        else:
+            try:
+                nova.servers.delete(server.id)
+                log.info("Server %s correctly deleted", server.id)
+            except Exception as ex:
+                log.error("Error while deleting server %s: %s", server.id, ex)
+
+def maybe_delete_volumes(session, volumes, dry_run=True):
+    cinder = cinder_client.Client('2', session=session)
+
+    for volume in volumes:
+        log.info("Volume %s (%s) to be deleted", volume.id, volume.name)
+        if dry_run:
+            log.info("DRY-RUN: not deleting volume")
+        else:
+            try:
+                cinder.volumes.delete(volume.id)
+                log.info("Volume %s correctly deleted", volume.id)
+            except Exception as ex:
+                log.error("Error deleting volume %s: %s", volume.id, ex)
+
+def maybe_remove_assignment(session, users, assignment, dry_run=True):
+    keystone = keystone_client.Client(session=session)
+
+    for user in users:
+        user_roles = [i for i in assignment if i.user['id'] == user]
+        for role in user_roles:
+            roleid = role.role['id']
+            projectid = role.scope['project']['id']
+            log.info("Removing role %s from user %s in project %s", roleid, user, projectid)
+            if dry_run:
+                log.info("DRY-RUN: Not removing any assignment")
+            else:
+                try:
+                    keystone.roles.revoke(roleid, user=user, project=projectid)
+                    log.info("Correctly removed role %s from user %s in project %s", roleid, user, projectid)
+                except Exception as ex:
+                    log.error("Error while removing role %s from user %s in project %s: %s", roleid, user, projectid, ex)
+                                          
+    
+def main(opts):
+    """
+    * find users that have been deleted from ldap.
+      - list all assignemnt
+      - try to load the user, if it's not possible, the user was deleted
+    * for each deleted user
+      - find all resources created by the user
+      - optionally delete them
+      - optinally send an email to the owner and the technical contact of the project
+
+    """
+    sess = make_session(opts)
+    kclient = keystone_client.Client(session=sess)
+    role_assignment = kclient.role_assignments.list()
+    missing_users = []
+    num_users = len(set(role.user['id'] for role in role_assignment))
+    log.info("Found %d users", num_users)
+    for role in role_assignment:
+        uid = role.user['id']
+        try:
+            user = kclient.users.get(uid)
+        except kex.NotFound:
+            log.info("Found missing user %s", uid)
+            missing_users.append(uid)
+
+    nova = nova_client.Client('2.1', session=sess)
+    cinder = cinder_client.Client('2', session=sess)
+    neutron = neutron_client.Client(session=sess)
+    # glance images are owned by the project, not the user.
+    # glance = glance_client.Client('2', session=sess)
+    # swift
+
+    for uid in missing_users:
+        # volumes are somehow shared among tenants, so we might not
+        # want to delete them, but we want to ask the owner if it
+        # should be deleted.
+        volumes = cinder.volumes.list(search_opts={'all_tenants': True, 'user_id':uid})
+        log.info("Found %d volumes belonging to user %s", len(volumes), uid)
+        servers = nova.servers.list(search_opts={'all_tenants': True, 'user_id':uid})
+        log.info("Found %d servers belonging to user %s", len(servers), uid)
+
+        maybe_delete_volumes(sess, volumes, dry_run=opts.dry_run)
+        maybe_delete_server(sess, servers, dry_run=opts.dry_run)
+
+    maybe_remove_assignment(sess, missing_users, role_assignment, dry_run=opts.dry_run)
+    return 0
+
+
+if __name__ == "__main__":
+    opts = setup()
+    sys.exit(main(opts))
