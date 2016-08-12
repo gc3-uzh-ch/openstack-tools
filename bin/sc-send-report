@@ -679,25 +679,40 @@ def main(opts):
     # all_reports is used to send a single report with all information to the ADMIN_RECIPIENT
     all_reports = {}
     for project in projects.values():
-        if project.id not in summary or (cpu_util and project.id not in cpu_util):
-            log.warn("No detailed report for project %s: skipping" % project.name)
-            continue
-        # try:
-        if True:
-            streport = ''
+        all_reports[project.id] = {'nova':{}, 'cinder':{}, 'swift':{}}
+        streport = ''
+        # Get cinder reports
+        try:
             creport, cdata = create_cinder_report(project, cinder_summary[project.id])
             streport += creport
-            if opts.ceilometer:
-                nreport, ndata = create_nova_ceilometer_report(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
-            else:
-                nreport, ndata = create_nova_report(project, summary[project.id], dict([(k,v) for k,v in instances.items() if v['tenant_id'] == project.id]))
+            
+            all_reports[project.id]['cinder'] = cdata
+        except Exception as ex:
+            log.warn("Error while generating CINDER report for project %s: %s", project.name, ex)
+
+        # get nova report
+        try:
+            if project.id in summary:
+                if opts.ceilometer:
+                    nreport, ndata = create_nova_ceilometer_report(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
+
+                else:
+                    nreport, ndata = create_nova_report(project, summary[project.id], dict([(k,v) for k,v in instances.items() if v['tenant_id'] == project.id]))
+                all_reports[project.id]['nova'] = ndata
+                streport += '\n\n%s' % nreport
+
+        except Exception as ex:
+            log.warn("Error while generating NOVA report for project %s: %s", project.name, ex)
+
+        # get swift report
+        try:
             sreport, sdata = create_swift_report(project, swift_summary.get(project.id))
-            all_reports[project.id] = {'msg': str.join('\n\n', [creport, sreport, nreport]),
-                                       'nova': ndata,
-                                       'cinder': cdata,
-                                       'swift': sdata}
-        # except Exception as ex:
-        #     log.error("Error creating report for project %s: %s", project.name, ex)
+            all_reports[project.id]['swift'] = sdata
+            streport += '\n\n%s' % sreport
+        except Exception as ex:
+            log.warn("Error while generating SWIFT report for project %s: %s", project.name, ex)
+
+        all_reports[project.id]['msg'] = streport
 
     # Save data
     for service in ['nova', 'cinder', 'swift']:
