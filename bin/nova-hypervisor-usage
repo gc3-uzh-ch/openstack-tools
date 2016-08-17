@@ -26,6 +26,7 @@ __docformat__ = 'reStructuredText'
 __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 
 import argparse
+import json
 import logging
 import os
 import prettytable
@@ -135,7 +136,7 @@ def setup():
                         envvar="OS_AUTH_URL",
                         help='OpenStack auth url endpoint. If not supplied, the value of the '
                         '"OS_AUTH_URL" environment variable is used.')
-
+    parser.add_argument('--json', action='store_true')
     parser.add_argument('-l', '--long', action='store_true')
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
@@ -211,51 +212,41 @@ def main(opts):
 
     all_vms = nova.servers.list(search_opts={'all_tenants': 'True'})
     log.info("%d vms currently running" % len(all_vms))
+
+    data = {'summary': {}, 'hypervisors': [], 'flavors': []}
     if opts.long:
-        # If --long, print a table with all hypervisors
-        pt = prettytable.PrettyTable(('Hostname', 'state', 'cores', 'vcpus', 'VMs', 'vcpus_used', 'vcpus_free', 'mem', 'mem_used', 'mem_free'))
-        for field in pt.field_names:
-            pt.align[field] = 'r'
-        pt.align['Hostname'] = 'l'
-
+        detail = data['hypervisors']
         for hyp in hypervisors:
-            pt.add_row([
-                hyp.hypervisor_hostname,
-                "%s/%s" % (hyp.state, hyp.status),
-                hyp.vcpus,
-                hyp.vcpus_max,
-                len([vm for vm in all_vms if getattr(vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname') == hyp.hypervisor_hostname]),
-                hyp.vcpus_used,
-                hyp.vcpus_free,
-                mib_to_str(hyp.memory_mb),
-                mib_to_str(hyp.memory_mb_used),
-                mib_to_str(hyp.memory_mb_free),
-                ])
-        print(pt.get_string(sortby='Hostname'))
+            detail.append(
+                {'hostname': hyp.hypervisor_hostname,
+                'state': "%s/%s" % (hyp.state, hyp.status),
+                'cores': hyp.vcpus,
+                'vcpus': hyp.vcpus_max,
+                'VMs': len([vm for vm in all_vms if getattr(vm, 'OS-EXT-SRV-ATTR:hypervisor_hostname') == hyp.hypervisor_hostname]),
+                'vcpus_used': hyp.vcpus_used,
+                'vcpus_free': hyp.vcpus_free,
+                'mem': hyp.memory_mb,
+                'mem_used': hyp.memory_mb_used,
+                'mem_free': hyp.memory_mb_free,
+                })
 
 
+    # Collect data on the general availability of vcpus and memory
     enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
 
-    pt = prettytable.PrettyTable(('property','value'))
-    pt.align['property'] = 'l'
-    pt.align['value'] = 'r'
-    pt.add_row(['hypervisors',len(hypervisors)])
-    pt.add_row(['hypervisors enabled',len(enabled_hypervisors)])
-    pt.add_row(['vcpus', sum(h.vcpus for h in hypervisors)])
     avail_cpus = sum(h.vcpus for h in enabled_hypervisors)
     used_cpus = sum(h.vcpus_used for h in hypervisors)
-    pt.add_row(['available vcpus', avail_cpus])
-    pt.add_row(['free vcpus', sum(h.vcpus_free for h in enabled_hypervisors)])
-    pt.add_row(['used vcpus', used_cpus])
-    pt.add_row(['vcpus usage %%', '%.2f %%' % (float(used_cpus)/avail_cpus*100)])
-    pt.add_row(['vms', len(all_vms)])
-    print(pt)
-
-    pt = prettytable.PrettyTable(('flavor', 'current', 'max', 'avail'))
-    for field in pt.field_names:
-        pt.align[field] = 'r'
-    pt.align['flavor'] = 'l'
-
+    data['summary'] = {
+        'hypervisors': len(hypervisors),
+        'hypervisors enabled': len(enabled_hypervisors),
+        'vcpus': sum(h.vcpus for h in hypervisors),
+        'available vcpus': avail_cpus,
+        'free vcpus': sum(h.vcpus_free for h in enabled_hypervisors),
+        'used vcpus': used_cpus,
+        'vcpus usage %': '%.2f %%' % (float(used_cpus)/avail_cpus*100),
+        'vms': len(all_vms),
+    }
+    
     # For each flavor, check how many can be ran
     if len(enabled_hypervisors) != hypervisors:
         log.warning("Ignoring %d disabled hypervisors" % (len(hypervisors) - len(enabled_hypervisors)))
@@ -263,13 +254,60 @@ def main(opts):
         flavor = ProxyFlavor(flavor)
         log.debug("Computing capability for flavor %s" % flavor.name)
         maxf, availf = compute_capability(flavor, enabled_hypervisors)
-        pt.add_row([flavor.name,
-                   len([vm for vm in all_vms if vm.flavor['id'] == flavor.id]),
-                   maxf,
-                   availf])
+        data['flavors'].append(
+            {'name': flavor.name, 
+             'current': len([vm for vm in all_vms if vm.flavor['id'] == flavor.id]),
+             'max': maxf,
+             'avail': availf})
+    return data
+
+def print_table(data):
+    # Print deailed hypervisor information
+    if data['hypervisors']:
+        pt = prettytable.PrettyTable(('Hostname', 'state', 'cores', 'vcpus', 'VMs', 'vcpus_used', 'vcpus_free', 'mem', 'mem_used', 'mem_free'))
+        for field in pt.field_names:
+            pt.align[field] = 'r'
+        pt.align['Hostname'] = 'l'
+
+        for hyp in data['hypervisors']:
+            pt.add_row([
+                hyp['hostname'],
+                hyp['state'],
+                hyp['cores'],
+                hyp['vcpus'],
+                hyp['VMs'],
+                hyp['vcpus_used'],
+                hyp['vcpus_free'],
+                mib_to_str(hyp['mem']),
+                mib_to_str(hyp['mem_used']),
+                mib_to_str(hyp['mem_free']),
+                ])
+        print(pt.get_string(sortby='Hostname'))
+
+    # Print summary
+    pt = prettytable.PrettyTable(('property','value'))
+    pt.align['property'] = 'l'
+    pt.align['value'] = 'r'
+    for key,value in data['summary'].items():
+        pt.add_row([key, value])
+    print(pt)
+    
+    # Print detailed flavor information
+    pt = prettytable.PrettyTable(('flavor', 'current', 'max', 'avail'))
+    for field in pt.field_names:
+        pt.align[field] = 'r'
+    pt.align['flavor'] = 'l'
+    for flavor in data['flavors']:
+        pt.add_row([flavor['name'],
+                    flavor['current'],
+                    flavor['max'],
+                    flavor['avail']])
     print(pt.get_string(sortby='max', reversesort=True))
-
-
+    
 if __name__ == "__main__":
     opts = setup()
-    sys.exit(main(opts))
+    data = main(opts)
+    if opts.json:
+        print(json.dumps(data))
+    else:
+        print_table(data)
