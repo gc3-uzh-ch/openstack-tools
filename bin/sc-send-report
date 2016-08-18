@@ -233,6 +233,7 @@ def setup():
     parser.add_argument('--yesterday', action='store_true', help='Get reports from yesterda')
     parser.add_argument('-p', '--parallel', default=4, type=int)
     parser.add_argument('--csvdir', default='/tmp/sc-send-report', help='Directory where csv data')
+    parser.add_argument('--services', default="nova,swift,cinder", help='Comma separated list of services we want to check')
     parser.add_argument('project',
                         nargs='*',
                         help="Create reports only for these projects. Default: all projects")
@@ -393,16 +394,21 @@ def get_swift_summary(opts, projects, sess=None):
         p['storage_url'] = swift_endpoint.url % {'tenant_id':project.id}
         tasks.put(p)
 
+    if len(projects) != tasks.qsize():
+        log.error("Task queue is %d but we have %d projects", tasks.qsize(), len(projects))
     consumers = [SwiftChecker(tasks, results, opts) for i in range(opts.parallel)]
     for w in consumers:
         w.start()
 
     log.debug("Joining task queue")
     tasks.join()
-    log.debug("Terminating consumers")
-    [w.terminate() for w in consumers]
+    if len(projects) != results.qsize():
+        log.error("Result task queue is %d but we have %d tasks", results.qsize(), len(projects))
+    log.info("Terminating consumers")
+    # [w.terminate() for w in consumers]
     reports = []
-    while not results.empty():
+    for i in range(results.qsize()):
+    # while not results.empty():
         reports.append(results.get())
     return {r['project']['id']:r for r in reports}
 
@@ -643,6 +649,8 @@ def main(opts):
     sess = make_session(opts)
     keystone = keystone_client.Client(session=sess)
 
+    services = [i for i in ['nova', 'cinder', 'swift'] if i in opts.services.split(',')]
+    
     # Get the projects
     all_projects = keystone.projects.list()
     if opts.project:
@@ -652,28 +660,29 @@ def main(opts):
 
     log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
 
-    # Get usage from swift
-    swift_summary = get_swift_summary(opts, projects)
+    if 'swift' in services:
+        # Get usage from swift
+        swift_summary = get_swift_summary(opts, projects)
 
-    # Get summary from cinder
-    cinder_summary = get_cinder_summary(opts, projects.values(), sess=sess)
+    if 'cinder' in services:
+        # Get summary from cinder
+        cinder_summary = get_cinder_summary(opts, projects.values(), sess=sess)
 
-    # Get usage from nova
-    summary = get_nova_summary(opts, sess=sess)
-    instances = {}
+    if 'nova' in services:
+        # Get usage from nova
+        summary = get_nova_summary(opts, sess=sess)
+        instances = {}
 
-    for report in summary.values():
-        instances.update({i['instance_id']: i for i in report.server_usages})
+        for report in summary.values():
+            instances.update({i['instance_id']: i for i in report.server_usages})
 
-    log.debug("Getting detailed information for %s instances" % len(instances))
-    # Get usage from ceilometer
-    cpu_util = []
-    cpu_util_detailed = []
-    if opts.ceilometer:
-        cpu_util = get_ceilometer_metric(opts, 'cpu_util')
-        cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
-
-    # Get summary from cinder
+        log.debug("Getting detailed information for %s instances" % len(instances))
+        # Get usage from ceilometer
+        cpu_util = []
+        cpu_util_detailed = []
+        if opts.ceilometer:
+            cpu_util = get_ceilometer_metric(opts, 'cpu_util')
+            cpu_util_detailed = get_raw_ceilometer_metric(opts, 'cpu_util', g=['project_id', 'resource_id'])
 
     # For each project, get the report.
     # all_reports is used to send a single report with all information to the ADMIN_RECIPIENT
@@ -682,40 +691,43 @@ def main(opts):
         all_reports[project.id] = {'nova':{}, 'cinder':{}, 'swift':{}}
         streport = ''
         # Get cinder reports
-        try:
-            creport, cdata = create_cinder_report(project, cinder_summary[project.id])
-            streport += creport
-            
-            all_reports[project.id]['cinder'] = cdata
-        except Exception as ex:
-            log.warn("Error while generating CINDER report for project %s: %s", project.name, ex)
+        if 'cinder' in services:
+            try:            
+                creport, cdata = create_cinder_report(project, cinder_summary[project.id])
+                streport += creport
 
-        # get nova report
-        try:
-            if project.id in summary:
-                if opts.ceilometer:
-                    nreport, ndata = create_nova_ceilometer_report(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
+                all_reports[project.id]['cinder'] = cdata
+            except Exception as ex:
+                log.warn("Error while generating CINDER report for project %s: %s", project.name, ex)
 
-                else:
-                    nreport, ndata = create_nova_report(project, summary[project.id], dict([(k,v) for k,v in instances.items() if v['tenant_id'] == project.id]))
-                all_reports[project.id]['nova'] = ndata
-                streport += '\n\n%s' % nreport
+        if 'nova' in services:
+            # get nova report
+            try:
+                if project.id in summary:
+                    if opts.ceilometer:
+                        nreport, ndata = create_nova_ceilometer_report(project, summary[project.id], instances, cpu_util[project.id], [i for i in cpu_util_detailed if i.groupby['project_id'] == project.id])
 
-        except Exception as ex:
-            log.warn("Error while generating NOVA report for project %s: %s", project.name, ex)
+                    else:
+                        nreport, ndata = create_nova_report(project, summary[project.id], dict([(k,v) for k,v in instances.items() if v['tenant_id'] == project.id]))
+                    all_reports[project.id]['nova'] = ndata
+                    streport += '\n\n%s' % nreport
 
-        # get swift report
-        try:
-            sreport, sdata = create_swift_report(project, swift_summary.get(project.id))
-            all_reports[project.id]['swift'] = sdata
-            streport += '\n\n%s' % sreport
-        except Exception as ex:
-            log.warn("Error while generating SWIFT report for project %s: %s", project.name, ex)
+            except Exception as ex:
+                log.warn("Error while generating NOVA report for project %s: %s", project.name, ex)
+
+        if 'swift' in services:
+            # get swift report
+            try:
+                sreport, sdata = create_swift_report(project, swift_summary.get(project.id))
+                all_reports[project.id]['swift'] = sdata
+                streport += '\n\n%s' % sreport
+            except Exception as ex:
+                log.warn("Error while generating SWIFT report for project %s: %s", project.name, ex)
 
         all_reports[project.id]['msg'] = streport
 
     # Save data
-    for service in ['nova', 'cinder', 'swift']:
+    for service in services:
         for reportype in ['summary', 'detailed']:
             if not [i for i in all_reports.values() if reportype in i[service]]:
                 # No `reportype` report for this service: skip it
@@ -729,12 +741,15 @@ def main(opts):
                 with open(fname, 'w') as fd:
                     writer = csv.writer(fd)
                     for project_id, report in all_reports.items():
+                        # Again, check if for some projects maybe there is no report
                         pname = projects.get(project_id).name
+                        if not report[service] or reportype not in  report[service]:
+                            log.info("Skipping project %s as no '%s' report is found for service %s",
+                                     project_id, reportype, service)
+                            continue
                         if write_header:
                             writer.writerow(['Project'] + report[service][reportype][0])
                             write_header = False
-                        if not report[service] or reportype not in  report[service]:
-                            continue
                         for row in report[service][reportype][1:]:
                             writer.writerow([pname] + row)
             except Exception as ex:
