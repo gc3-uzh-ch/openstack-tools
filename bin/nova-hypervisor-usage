@@ -31,6 +31,7 @@ import logging
 import os
 import prettytable
 import sys
+from collections import OrderedDict
 
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
@@ -236,17 +237,17 @@ def main(opts):
 
     avail_cpus = sum(h.vcpus for h in enabled_hypervisors)
     used_cpus = sum(h.vcpus_used for h in hypervisors)
-    data['summary'] = {
-        'hypervisors': len(hypervisors),
-        'hypervisors enabled': len(enabled_hypervisors),
-        'vcpus': sum(h.vcpus for h in hypervisors),
-        'available vcpus': avail_cpus,
-        'free vcpus': sum(h.vcpus_free for h in enabled_hypervisors),
-        'used vcpus': used_cpus,
-        'vcpus usage %': '%.2f %%' % (float(used_cpus)/avail_cpus*100),
-        'vms': len(all_vms),
-    }
-    
+    data['summary'] = OrderedDict([
+        ('hypervisors', len(hypervisors)),
+        ('hypervisors enabled', len(enabled_hypervisors)),
+        ('vcpus', sum(h.vcpus for h in hypervisors)),
+        ('available vcpus', avail_cpus),
+        ('vcpus free', sum(h.vcpus_free for h in enabled_hypervisors)),
+        ('vcpus used', used_cpus),
+        ('vcpus usage %', '%.2f %%' % (float(used_cpus)/avail_cpus*100)),
+        ('vms', len(all_vms)),
+    ])
+
     # For each flavor, check how many can be ran
     if len(enabled_hypervisors) != hypervisors:
         log.warning("Ignoring %d disabled hypervisors" % (len(hypervisors) - len(enabled_hypervisors)))
@@ -255,7 +256,8 @@ def main(opts):
         log.debug("Computing capability for flavor %s" % flavor.name)
         maxf, availf = compute_capability(flavor, enabled_hypervisors)
         data['flavors'].append(
-            {'name': flavor.name, 
+            {'name': flavor.name,
+             'visibility': 'public' if flavor.is_public else 'private',
              'current': len([vm for vm in all_vms if vm.flavor['id'] == flavor.id]),
              'max': maxf,
              'avail': availf})
@@ -291,19 +293,21 @@ def print_table(data):
     for key,value in data['summary'].items():
         pt.add_row([key, value])
     print(pt)
-    
+
     # Print detailed flavor information
-    pt = prettytable.PrettyTable(('flavor', 'current', 'max', 'avail'))
+    pt = prettytable.PrettyTable(('flavor', 'visibility', 'current', 'max', 'avail'))
     for field in pt.field_names:
         pt.align[field] = 'r'
     pt.align['flavor'] = 'l'
+    pt.align['visibility'] = 'l'
     for flavor in data['flavors']:
         pt.add_row([flavor['name'],
+                    flavor['visibility'],
                     flavor['current'],
                     flavor['max'],
                     flavor['avail']])
     print(pt.get_string(sortby='max', reversesort=True))
-    
+
 if __name__ == "__main__":
     opts = setup()
     data = main(opts)
