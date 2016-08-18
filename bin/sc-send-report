@@ -42,6 +42,7 @@ import prettytable
 import re
 import smtplib
 import sys
+import time
 
 import swiftclient.client as swiftclient
 
@@ -124,6 +125,17 @@ def memoize(f):
 
 @memoize
 def make_session(opts):
+    """Create a Keystone session"""
+    auth = v3.Password(auth_url=opts.os_auth_url,
+                       username=opts.os_username,
+                       password=opts.os_password,
+                       project_name=opts.os_project_name,
+                       user_domain_name=opts.os_user_domain_name,
+                       project_domain_name=opts.os_project_domain_name)
+    sess = session.Session(auth=auth)
+    return sess
+
+def make_new_session(opts):
     """Create a Keystone session"""
     auth = v3.Password(auth_url=opts.os_auth_url,
                        username=opts.os_username,
@@ -289,22 +301,80 @@ def get_nova_summary(opts, sess=None):
     usage = nclient.usage.list(opts.start, opts.end, detailed=True)
     return {i.tenant_id: i for i in usage}
 
+class CinderChecker(mp.Process):
+    def __init__(self, tasks, results, opts):
+        mp.Process.__init__(self)
+        self.tasks = tasks
+        self.results = results
+        self.opts = opts
+        self.cclient = None
+        self.connect()
+
+    def connect(self):
+        if self.cclient:
+            return self.cclient
+        try:
+            sess = make_new_session(self.opts)
+            self.cclient = cinder_client.Client('2', session=sess)
+            self.volume_types = self.cclient.volume_types.list()
+            return self.cclient
+        except:
+            return False
+
+    def run(self):
+        for i in range(10):
+            if self.connect():
+                break
+            time.sleep(5)
+        while True:
+            try:
+                project = self.tasks.get_nowait()
+            except:
+                break
+            if project is None:
+                log.debug("CinderChecker %s: Queue is empty, exiting", self.name)
+                break
+            report = self.get_cinder_stats(project)
+            report['project'] = project
+            self.results.put(report)
+            self.tasks.task_done()
+
+    def get_cinder_stats(self, project):
+        log.info("Checking cinder for project %s", project['name'])
+        quota = self.cclient.quotas.get(project['id'], usage=True)
+        report =  {'usage': {'': {'volumes': quota.volumes,
+                                  'gigabytes': quota.gigabytes}}}
+        for vol in self.volume_types:
+            if hasattr(quota, 'volumes_%s' % vol.name) and \
+               hasattr(quota, 'gigabytes_%s' % vol.name):
+                report['usage'][vol.name] = {'volumes': getattr(quota, 'volumes_%s' % vol.name),
+                                    'gigabytes': getattr(quota, 'gigabytes_%s' % vol.name)}
+        log.debug("CINDER report for project %s: %s", project['name'], report)
+        return report
+    
 def get_cinder_summary(opts, projects, sess=None):
     if not sess:
         sess = make_sessions(opts)
-    cclient = cinder_client.Client('2', session=sess)
-    volume_types = cclient.volume_types.list()
-    report = {}
+    reports = []
+    tasks = mp.JoinableQueue()
+    results = mp.Queue()
     for project in projects:
-        quota = cclient.quotas.get(project.id, usage=True)
-        report[project.id] = {'': {'volumes': quota.volumes,
-                                   'gigabytes': quota.gigabytes}}
-        for vol in volume_types:
-            if hasattr(quota, 'volumes_%s' % vol.name) and \
-               hasattr(quota, 'gigabytes_%s' % vol.name):
-                report[project.id][vol.name] = {'volumes': getattr(quota, 'volumes_%s' % vol.name),
-                                                'gigabytes': getattr(quota, 'gigabytes_%s' % vol.name)}
-    return report
+        p = project.to_dict()
+        tasks.put(p)
+    if len(projects) != tasks.qsize():
+        log.error("Task queue is %d but we have %d projects", tasks.qsize(), len(projects))
+
+    consumers = [CinderChecker(tasks, results, opts) for i in range(opts.parallel)]
+    for w in consumers:
+        w.start()
+    tasks.join()
+    if len(projects) != results.qsize():
+        log.error("Result task queue is %d but we have %d tasks", results.qsize(), len(projects))
+
+    for i in range(results.qsize()):
+        reports.append(results.get())
+
+    return {r['project']['id']:r for r in reports}
 
 def get_ceilometer_metric(opts, metric):
     """Get `metric` metric from ceilometer. Group it by project_id and return a dictionary {'project-id': metric}"""
@@ -558,8 +628,9 @@ def create_cinder_report(project, cinder_summary):
     for field in pt.field_names:
         pt.align[field] = 'r'
     pt.align['volume type'] = 'l'
-    global_quota = cinder_summary['']
-    for voltype, quota in cinder_summary.items():
+    global_quota = cinder_summary['usage']['']
+
+    for voltype, quota in cinder_summary['usage'].items():
         volumes = quota['volumes']
         if volumes['in_use'] == 0: continue
         gigabytes = quota['gigabytes']
@@ -692,7 +763,7 @@ def main(opts):
         streport = ''
         # Get cinder reports
         if 'cinder' in services:
-            try:            
+            try:
                 creport, cdata = create_cinder_report(project, cinder_summary[project.id])
                 streport += creport
 
