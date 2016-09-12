@@ -60,7 +60,7 @@ DEFAULT_SECGROUP_RULES = [
 ]
 USERS_MAILING_LIST='https://lists.uzh.ch/s3it.lists.uzh.ch/sympa/review/cloud'
 # Default swift quota is 0 for the time being
-DEFAULT_SWIFT_QUOTA =0
+DEFAULT_SWIFT_QUOTA = 0
 
 UZH_FACULTIES = [
     'MED',
@@ -274,7 +274,7 @@ def setup_default_swift_quota(opts):
     try:
         swiftclient.post_account(url=storage_url,
                                  token=token,
-                                 headers={'x-account-meta-quota-bytes': DEFAULT_SWIFT_QUOTA})
+                                 headers={'x-account-meta-quota-bytes': str(DEFAULT_SWIFT_QUOTA)})
     except Exception as ex:
         log.error("Failed to set SWIFT quota %s to tenant %s: %s",
                   DEFAULT_SWIFT_QUOTA, opts.name, ex)
