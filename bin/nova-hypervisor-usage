@@ -235,7 +235,7 @@ def main(opts):
     # Collect data on the general availability of vcpus and memory
     enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
 
-    avail_cpus = sum(h.vcpus for h in enabled_hypervisors)
+    avail_cpus = sum(h.vcpus*h.cpu_allocation_ratio for h in enabled_hypervisors)
     used_cpus = sum(h.vcpus_used for h in hypervisors)
     data['summary'] = OrderedDict([
         ('hypervisors', len(hypervisors)),
