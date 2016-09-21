@@ -226,8 +226,8 @@ def save_report(reports, opts):
     with open(opts.output, 'w') as csvfd:
         writer = csv.writer(csvfd)
         header = ['project', 'bytes', 'quota', 'containers', 'objects']
-        policies = set(reduce(operator.add, [report['policies'].keys() for report in reports], []))
-        for policy in sorted(policies):
+        policies = sorted(set(reduce(operator.add, [report['policies'].keys() for report in reports], [])))
+        for policy in policies:
             header += ['bytes (%s policy)' % policy, 'objects (%s policy)' % policy]
         writer.writerow(header)
 
@@ -267,6 +267,7 @@ def main(opts):
 
     for i in projects:
         reports.append(results.get())
+
     save_report(reports, opts)
     print("Stats saved into %s file" % opts.output)
 
