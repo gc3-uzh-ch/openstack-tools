@@ -68,6 +68,7 @@ UZH_FACULTIES = [
     'OEC',
     'PHIL',
     'VET',
+    'N/A',
 ]
 
 
