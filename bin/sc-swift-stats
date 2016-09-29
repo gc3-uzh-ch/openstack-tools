@@ -23,6 +23,7 @@ __docformat__ = 'reStructuredText'
 __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 
 import argparse
+import datetime
 import logging
 import os
 import csv
@@ -229,6 +230,9 @@ def save_report(reports, opts):
         policies = sorted(set(reduce(operator.add, [report['policies'].keys() for report in reports], [])))
         for policy in policies:
             header += ['bytes (%s policy)' % policy, 'objects (%s policy)' % policy]
+
+        curtimestamp = datetime.datetime.utcnow().isoformat()
+        header.append('timestampUTC')
         writer.writerow(header)
 
         byte_conv = b_to_human if opts.human else lambda x: str(x)
@@ -245,6 +249,7 @@ def save_report(reports, opts):
                 else:
                     row.append(byte_conv(report['policies'][policy]['bytes-used']))
                     row.append(num_conv(report['policies'][policy]['object-count']))
+            row.append(curtimestamp)
             writer.writerow(row)
 
 def main(opts):
