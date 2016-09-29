@@ -251,7 +251,20 @@ def main(opts):
     # For each flavor, check how many can be ran
     if len(enabled_hypervisors) != hypervisors:
         log.warning("Ignoring %d disabled hypervisors" % (len(hypervisors) - len(enabled_hypervisors)))
-    for flavor in nova.flavors.list():
+
+    # AM: Cool, use a boolean to store 3 different values.  When
+    # calling flavors.list with is_public=None, all flavors will be
+    # returned (public and private). Instead, when calling it with
+    # is_public=True (default) all public flavors **and some private
+    # flavor** is returned. Interesting enough, there is no
+    # documentation of the "is_public" attribute on the API
+    # documentation at
+    # http://developer.openstack.org/api-ref-compute-v2.1.html but
+    # it's present at
+    # http://developer.openstack.org/api-ref/compute/?expanded=list-flavors-with-details-detail
+    #
+    # Also check https://github.com/openstack/nova/blob/master/nova/api/openstack/compute/flavors.py#L61
+    for flavor in nova.flavors.list(is_public=None):
         flavor = ProxyFlavor(flavor)
         log.debug("Computing capability for flavor %s" % flavor.name)
         maxf, availf = compute_capability(flavor, enabled_hypervisors)
