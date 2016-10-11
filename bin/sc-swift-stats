@@ -32,6 +32,7 @@ import re
 from collections import defaultdict
 import multiprocessing as mp
 import operator
+import prettytable
 
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
@@ -231,13 +232,18 @@ def save_report(reports, opts):
         for policy in policies:
             header += ['bytes (%s policy)' % policy, 'objects (%s policy)' % policy]
 
+        
         curtimestamp = datetime.datetime.utcnow().isoformat()
         header.append('timestampUTC')
         writer.writerow(header)
+        from prettytable import PrettyTable
+        pt = PrettyTable(header)
 
         byte_conv = b_to_human if opts.human else lambda x: str(x)
         num_conv = n_to_human if opts.human else lambda x: str(x)
         for report in reports:
+            if int(report['objects']) == 0:
+                continue
             row = [report['project']['name'],
                    byte_conv(report['bytes']),
                    byte_conv(report['quota']),
@@ -251,6 +257,8 @@ def save_report(reports, opts):
                     row.append(num_conv(report['policies'][policy]['object-count']))
             row.append(curtimestamp)
             writer.writerow(row)
+            pt.add_row(row)
+    print(pt)
 
 def main(opts):
     reports = {}
