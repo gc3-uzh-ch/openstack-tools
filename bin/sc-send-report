@@ -53,11 +53,11 @@ try:
 except ImportError as ex:
     PLOT_ENABLED=False
 
-try:
-    import seaborn
-except:
-    # seaborn is used only to make plots nicer.
-    pass
+# try:
+#     import seaborn
+# except:
+#     # seaborn is used only to make plots nicer.
+#     pass
 
 import swiftclient.client as swiftclient
 
@@ -555,13 +555,18 @@ def create_nova_report(project, nova_summary, instances, opts):
             vms_by_day.append((t, d.instance_id.count(), d.vcpus.sum()))
         ts = pd.DataFrame(vms_by_day, columns=['date','VMs','vcpus'])
         ts.index = ts.date
-        axes = ts.plot()
-        axes.set_title("VMs and vCPUs usage for project %s\nfrom %s to %s" % (
-            project.name, opts.start, opts.end))
-        plotfile = os.path.join(opts.datadir, 'nova_plot_%s-%s_%s.png' % (
-            opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
-        plt.savefig(plotfile)
 
+        with plt.xkcd():
+            # because we are not serious people...
+            fig = plt.figure()
+            plt.plot(ts['VMs'])
+            plt.plot(ts['vcpus'])
+            fig.axes[0].set_title("VMs and vCPUs usage for project %s\nfrom %s to %s" % (
+                project.name, opts.start, opts.end))
+            plotfile = os.path.join(opts.datadir, 'nova_plot_%s-%s_%s.png' % (
+                opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
+            plt.savefig(plotfile)
+        
     return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed, 'plot': plotfile})
 
 
@@ -812,4 +817,6 @@ def main(opts):
 
 if __name__ == "__main__":
     opts = setup()
+    if not os.path.exists(opts.datadir):
+        os.makedirs(opts.datadir)
     sys.exit(main(opts))
