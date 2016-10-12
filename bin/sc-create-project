@@ -75,20 +75,29 @@ UZH_FACULTIES = [
 class ProjectExists(Exception): pass
 
 def print_postinstall_info(args):
+    addresses = set()
+    for fullname, email in [
+            (args.contact, args.contact_email),
+            (args.owner,   args.owner_email),
+    ]:
+        addresses.add("{email} {fullname}"
+                   .format(email=email, fullname=fullname))
+    multiple_add = '\n'.join(sorted(addresses))
     print("""
-The project `%s` has been created.
-You should add the email of the contact owner and of the project owner
+Project `{project_name}` has been successfully created.
+
+You should now subscribe the contact owner and the project owner
 to the cloud mailing list.
 
-Open the page:
+Open page {list_admin_url}
+and copy+paste the following text into the 'Multiple Add' textarea:
 
-    %s
-
-and add the following email addresses:
-
-    %s
-    %s
-""" % (args.name, USERS_MAILING_LIST, args.contact_email, args.owner_email))
+{multiple_add}
+    """
+        .format(
+            project_name=args.name,
+            list_admin_url=USERS_MAILING_LIST,
+            multiple_add=multiple_add))
 
 class EnvDefault(argparse.Action):
     # This is took from
