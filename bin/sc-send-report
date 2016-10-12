@@ -559,14 +559,29 @@ def create_nova_report(project, nova_summary, instances, opts):
         with plt.xkcd():
             # because we are not serious people...
             fig = plt.figure()
+            xmax = ts['vcpus'].idxmax()
+
+            # Try to move the annotation to the left, but ensure it
+            # doesn't go over the left border.
+
+            # X coordinate of the text will never go beyond 1/4 of the x width
+            timespan = ts.index.max()-ts.index.min()
+            max_x_text = ts.index.max() - datetime.timedelta(days=(timespan/4).days)
+            # Ensure the X of the text is between the beginning of the
+            # plot and max_x_text, but try to move it a bit to the
+            # left
+            xtext = min(max(xmax-datetime.timedelta(days=2), ts.index.min()), max_x_text)
+            ymax = ts.ix[xmax]['vcpus']
+            plt.annotate('Busiest day (%d)' % ymax, xy=(xmax,ymax), arrowprops=dict(arrowstyle='->'), xytext=(xtext, ymax-ymax/10.0))
             plt.plot(ts['VMs'])
             plt.plot(ts['vcpus'])
+            fig.autofmt_xdate()
             fig.axes[0].set_title("VMs and vCPUs usage for project %s\nfrom %s to %s" % (
                 project.name, opts.start, opts.end))
             plotfile = os.path.join(opts.datadir, 'nova_plot_%s-%s_%s.png' % (
                 opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
             plt.savefig(plotfile)
-        
+
     return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed, 'plot': plotfile})
 
 
