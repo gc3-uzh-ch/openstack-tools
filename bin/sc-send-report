@@ -45,6 +45,8 @@ import re
 import smtplib
 import sys
 import time
+import sqlalchemy as sqla
+import sqlalchemy.sql as sql
 
 PLOT_ENABLED=True
 try:
@@ -265,6 +267,8 @@ def setup():
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
     parser.add_argument('--prices', action='store_true', help='Also include prices')
+    parser.add_argument('--cinder-mysql-string', help='MySQL string to access cinder database')
+    parser.add_argument('--swift-mysql-string', help='MySQL string to access swift accounting database')
     parser.add_argument('--plots', action='store_true', help='Attach a plot with the usage')
     parser.add_argument('--yesterday', action='store_true', help='Get reports from yesterda')
     parser.add_argument('-p', '--parallel', default=4, type=int)
@@ -390,6 +394,46 @@ def get_cinder_summary(opts, projects, sess=None):
 
     return {r['project']['id']:r for r in reports}
 
+def get_cinder_detailed(opts):
+    # Access MySQL database to get a list of volumes that were up&running during this time.
+    db = sqla.create_engine(opts.cinder_mysql_string, echo=False)
+    metadata = sqla.MetaData(bind=db)
+    metadata.reflect()
+    volumes = metadata.tables['volumes']
+    q = sql.select([
+        volumes.c.project_id,
+        volumes.c.id,
+        volumes.c.display_name,
+        volumes.c.volume_type_id,
+        volumes.c.size,
+        sqla.func.greatest(volumes.c.created_at, str(opts.start)),
+        sqla.func.least(volumes.c.deleted_at, str(opts.end))
+    ]).where(
+            sql.and_(volumes.c.deleted==0,
+                     sql.not_(
+                         sql.or_(
+                             volumes.c.created_at > str(opts.end),
+                             sql.and_(
+                                 sql.not_(volumes.c.deleted_at==sql.null()),
+                                 volumes.c.deleted_at< str(opts.start))
+                         )
+                     )
+            )
+        )
+    results = db.execute(q)
+
+    # Fix deleted_at, which might be NULL on MySQL. In this case, we will select the smaller value.
+    rows = defaultdict(list)
+
+    for row in results.fetchall():
+        currow = list(row[1:])
+        if currow[-1] is None:
+            currow[-1] = str(opts.end)
+        currow[-2] = datetime.datetime.strptime(currow[-2], '%Y-%m-%d %H:%M:%S')
+        currow[-1] = datetime.datetime.strptime(currow[-1], '%Y-%m-%d %H:%M:%S')
+        rows[row[0]].append(currow)
+    return rows
+        
 
 class SwiftChecker(mp.Process):
     def __init__(self, tasks, results, opts):
@@ -538,7 +582,7 @@ def create_nova_report(project, nova_summary, instances, opts):
     table = str(pt)
     if table:
         report.append("")
-        report.append("Detailed usage for project %s - currently running instances\n" % project.name)
+        report.append("Detailed usage for project %s - instances\n" % project.name)
         report.append(str(table))
 
     # We might generate a plot here
@@ -592,7 +636,7 @@ def create_nova_report(project, nova_summary, instances, opts):
     return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed, 'plot': plotfile})
 
 
-def create_cinder_report(project, cinder_summary):
+def create_cinder_report(project, cinder_summary, cinder_detailed):
     report = []
     csvdata = []
     header = ['volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
@@ -623,7 +667,74 @@ def create_cinder_report(project, cinder_summary):
         report.append(str(pt))
     else:
         report.append("No Cinder volumes used")
-    return (str.join('\n', report), {'summary': csvdata})
+
+    if cinder_detailed:
+        header = ['id', 'name', 'Size (GiB)', 'GiB hours']
+        
+        pt = prettytable.PrettyTable(header, print_empty=False)
+        pt.align['name'] = 'l'
+        pt.align['Size (GiB)'] = 'r'
+        pt.align['GiB hours'] = 'r'
+
+        for row in cinder_detailed:
+            gbhours = row[3]*(row[5] - row[4]).total_seconds()/60/60
+            newrow = [row[0], row[1], row[3], "%.2f" % gbhours]
+            pt.add_row(newrow)
+        report.append("\nDetailed usage for project %s - volumes\n" % project.name)
+        report.append(str(pt))
+
+        # Also make the plot
+        plotfile = ''
+        vol_by_day = []
+        df = pd.DataFrame(cinder_detailed, columns=['id', 'name', 'type', 'size (GiB)', 'created_at', 'deleted_at'])
+        df.created_at = pd.to_datetime(df.created_at)
+        df.deleted_at = pd.to_datetime(df.deleted_at)
+        csvdata_detailed = [list(df.columns)]
+        csvdata_detailed += df.values.tolist()
+        for t in pd.date_range(opts.start, opts.end):
+            d = df[~((df.deleted_at < t) | (df.created_at > t))]
+            vol_by_day.append((t, d['id'].count(), d['size (GiB)'].sum()))
+
+        ts = pd.DataFrame(vol_by_day, columns=['date', 'volumes', 'GiB used'])
+        ts.index = ts.date
+
+        with plt.xkcd():
+            # because we are not serious people...
+            fig, ax = plt.subplots()
+            axes = [ax, ax.twinx()]
+            p1 = axes[0].plot(ts['volumes'], 'b-')
+            p2 = axes[1].plot(ts['GiB used'], 'r-')
+            # because we are not serious people...
+            # fig = plt.figure()
+            # ax1 = fig.add_subplot(111)
+            # ax1.plot(ts['volumes'])
+            # ax1.set_ylabel('volumes')
+            axes[0].set_ylim(0, ts['volumes'].max()+1)
+            axes[1].set_ylim(0, ts['GiB used'].max()*1.2)
+            # ax2 = fig.add_subplot(111, sharex=ax1)
+            # ax2.plot(ts['GiB used'])
+            # ax2.yaxis.tick_right()
+            # ax2.set_ylim(0, ts['GiB used'].max()+10)
+            # ax2.yaxis.set_label_position("right")
+            axes[0].set_ylabel('volumes')
+            axes[1].set_ylabel('gigabytes')
+
+            plt.legend((p1[0], p2[0]), (p1[0].get_label(), p2[0].get_label()), loc=0)
+            fig.autofmt_xdate()
+            # Set title
+            ax.set_title("Cinder volumes and used space for project %s\nfrom %s to %s" % (
+                project.name, opts.start, opts.end))
+
+            # Save to file
+            plotfile = os.path.join(opts.datadir, 'cinder_plot_%s-%s_%s.png' % (
+                opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
+            plt.savefig(plotfile)
+
+    retdict = {'summary': csvdata}
+    if cinder_detailed:
+        retdict['detailed'] = csvdata_detailed
+        retdict['plot'] = plotfile
+    return (str.join('\n', report), retdict)
 
 def create_swift_report(project, swift_summary):
     if not swift_summary or (swift_summary['objects'] ==  swift_summary['containers'] == 0):
@@ -711,6 +822,10 @@ def main(opts):
     if 'cinder' in services:
         # Get summary from cinder
         cinder_summary = get_cinder_summary(opts, projects.values(), sess=sess)
+        if opts.cinder_mysql_string:
+            cinder_detailed = get_cinder_detailed(opts)
+        else:
+            cinder_detailed = defaultdict(list)
 
     if 'nova' in services:
         # Get usage from nova
@@ -731,7 +846,7 @@ def main(opts):
         # Get cinder reports
         if 'cinder' in services:
             try:
-                creport, cdata = create_cinder_report(project, cinder_summary[project.id])
+                creport, cdata = create_cinder_report(project, cinder_summary[project.id], cinder_detailed[project.id])
                 streport += creport
 
                 all_reports[project.id]['cinder'] = cdata
@@ -793,8 +908,9 @@ def main(opts):
         try:
             plotfiles = []
             for report in all_reports.values():
-                if 'nova' in report and report['nova'].get('plot'):
-                    plotfiles.append(report['nova']['plot'])
+                for service in ('nova', 'cinder'):
+                    if service in report and report[service].get('plot'):
+                        plotfiles.append(report[service].get('plot'))
             send_mail_to(opts.smtp,
                          opts.mail_from,
                          opts.admin_email,
