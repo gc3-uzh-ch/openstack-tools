@@ -81,7 +81,19 @@ log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
 
 
+base_hpc = 0.002
+base_server = 0.001
+FLAVOR_COSTS = {'{}cpu-{}ram-hpc'.format(i, i*4): i*base_hpc for i in (1,2,4,8,16,32)}
+FLAVOR_COSTS.update({'{}cpu-{}ram-server'.format(i, i): i*base_server for i in (1,2,4,8)})
+
 ### Converion functions
+def compute_price_nova(instance):
+    cpuhours = instance['hours'] * instance['vcpus']
+    cost = FLAVOR_COSTS.get(instance['flavor'])
+    if not cost:
+        cost = instance['vcpus'] * base_hpc
+    return cpuhours * cost
+
 def compute_price_cinder(volumes, gb):
     return "%d CHF" % (gb*100/2**10/12)
 
@@ -436,7 +448,7 @@ def get_cinder_detailed(opts):
         currow[5] = datetime.datetime.strptime(currow[5], '%Y-%m-%d %H:%M:%S')
         rows[row[0]].append(currow)
     return rows
-        
+
 
 class SwiftChecker(mp.Process):
     def __init__(self, tasks, results, opts):
@@ -539,25 +551,9 @@ def create_nova_report(project, nova_summary, instances, opts):
     report = []
     csvdata = []
     csvdata_detailed = []
+    total_price = 0
 
-    # Summary information
-    header = ['vcpu hours', 'ram (hours)']
-
-    pt = prettytable.PrettyTable(header)
-    pt.align['vcpu hours'] = 'r'
-    pt.align['ram (hours)'] = 'r'
-
-    row = ["%.2f" % nova_summary.total_vcpus_usage,
-           # "%.2f" % (cpu[project].max/1e+9/60/60),
-           mib_to_str(nova_summary.total_memory_mb_usage),
-    ]
-    csvdata = [header, row]
-    pt.add_row(row)
-
-    report.append("Summary of usage for project %s\n" % project.name)
-    report.append(str(pt))
-
-    # Again, for each project and server
+    # Detailed information
     header_detailed = [
         'instance UUID',
         'instance name',
@@ -565,12 +561,16 @@ def create_nova_report(project, nova_summary, instances, opts):
         'vcpus',
         'cpu hours',
     ]
+    if opts.prices:
+        header_detailed.append('Cost')
     csvdata_detailed.append(header_detailed)
-    pt = prettytable.PrettyTable(header_detailed, print_empty=False)
-    pt.align['instance name'] = 'l'
-    pt.align['flavor'] = 'l'
-    pt.align['vcpus'] = 'r'
-    pt.align['cpu hours'] = 'r'
+    pt_det = prettytable.PrettyTable(header_detailed, print_empty=False)
+    pt_det.align['instance name'] = 'l'
+    pt_det.align['flavor'] = 'l'
+    pt_det.align['vcpus'] = 'r'
+    pt_det.align['cpu hours'] = 'r'
+    if opts.prices:
+        pt_det.align['Cost'] = 'r'
 
     for uuid, instance in instances.items():
         cpuhours = instance['hours'] * instance['vcpus']
@@ -580,9 +580,39 @@ def create_nova_report(project, nova_summary, instances, opts):
                instance['vcpus'],
                "%.2f hours" % cpuhours,
         ]
+        if opts.prices:
+            price = compute_price_nova(instance)
+            total_price += price
+            row.append("%.4f CHF" % price)
+        
         csvdata_detailed.append(row)
-        pt.add_row(row)
-    table = str(pt)
+        pt_det.add_row(row)
+
+    # Finally, add to the report
+
+    # Summary information
+    header = ['vcpu hours', 'ram (hours)']
+    if opts.prices:
+        header.append("Cost")
+
+    pt = prettytable.PrettyTable(header)
+    pt.align['vcpu hours'] = 'r'
+    pt.align['ram (hours)'] = 'r'
+    if opts.prices:
+        pt.align['Cost'] = 'r'
+
+    row = ["%.2f" % nova_summary.total_vcpus_usage,
+           # "%.2f" % (cpu[project].max/1e+9/60/60),
+           mib_to_str(nova_summary.total_memory_mb_usage),
+    ]
+    if opts.prices:
+        row.append("%.2f CHF" % total_price)
+    csvdata = [header, row]
+    pt.add_row(row)
+    report.append("Summary of usage for project %s\n" % project.name)
+    report.append(str(pt))
+
+    table = str(pt_det)
     if table:
         report.append("")
         report.append("Detailed usage for project %s - instances\n" % project.name)
@@ -673,7 +703,7 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
 
     if cinder_detailed:
         header = ['id', 'name', 'Size (GiB)', 'GiB hours']
-        
+
         pt = prettytable.PrettyTable(header, print_empty=False)
         pt.align['name'] = 'l'
         pt.align['Size (GiB)'] = 'r'
