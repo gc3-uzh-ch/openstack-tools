@@ -46,6 +46,7 @@ import smtplib
 import sys
 import time
 import sqlalchemy as sqla
+import sqlalchemy.orm
 import sqlalchemy.sql as sql
 
 PLOT_ENABLED=True
@@ -81,21 +82,27 @@ log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
 
 
-base_hpc = 0.002
-base_server = 0.001
-FLAVOR_COSTS = {'{}cpu-{}ram-hpc'.format(i, i*4): i*base_hpc for i in (1,2,4,8,16,32)}
-FLAVOR_COSTS.update({'{}cpu-{}ram-server'.format(i, i): i*base_server for i in (1,2,4,8)})
+### COSTS
+cost_base_hpc = 0.002
+cost_base_server = 0.001
+cost_base_cinder = 50.0/1024/365/24
+cost_vhp_cinder = 100.0/1024/365/24
+FLAVOR_COSTS = {'{}cpu-{}ram-hpc'.format(i, i*4): i*cost_base_hpc for i in (1,2,4,8,16,32)}
+FLAVOR_COSTS.update({'{}cpu-{}ram-server'.format(i, i): i*cost_base_server for i in (1,2,4,8)})
 
 ### Converion functions
 def compute_price_nova(instance):
     cpuhours = instance['hours'] * instance['vcpus']
     cost = FLAVOR_COSTS.get(instance['flavor'])
     if not cost:
-        cost = instance['vcpus'] * base_hpc
+        cost = instance['vcpus'] * cost_base_hpc
     return cpuhours * cost
 
-def compute_price_cinder(volumes, gb):
-    return "%d CHF" % (gb*100/2**10/12)
+def compute_price_cinder(volume):
+    if volume['volume_type'] == 'vhp':
+        return volume['gbhours'] * cost_vhp_cinder
+    else:
+        return volume['gbhours'] * cost_base_cinder
 
 def compute_price_swift(size, policy='replica-2'):
     if policy == 'replica-2':
@@ -413,6 +420,7 @@ def get_cinder_detailed(opts):
     metadata = sqla.MetaData(bind=db)
     metadata.reflect()
     volumes = metadata.tables['volumes']
+    volume_types = metadata.tables['volume_types']
     q = sql.select([
         volumes.c.project_id,     # 0
         volumes.c.id,             # 1
@@ -423,7 +431,8 @@ def get_cinder_detailed(opts):
         sqla.func.least(volumes.c.deleted_at, str(opts.end)).label('end'), # 6
         volumes.c.created_at, # 7
         volumes.c.deleted_at, # 8
-    ]).where(
+        volume_types.c.name.label('volume_type_name'),
+    ]).select_from(volumes.join(volume_types, volumes.c.volume_type_id==volume_types.c.id)).where(
             sql.and_(volumes.c.deleted==0,
                      sql.not_(
                          sql.or_(
@@ -441,12 +450,18 @@ def get_cinder_detailed(opts):
     rows = defaultdict(list)
 
     for row in results.fetchall():
-        currow = list(row[1:])
-        if currow[5] is None:
-            currow[5] = str(opts.end)
-        currow[4] = datetime.datetime.strptime(currow[4], '%Y-%m-%d %H:%M:%S')
-        currow[5] = datetime.datetime.strptime(currow[5], '%Y-%m-%d %H:%M:%S')
-        rows[row[0]].append(currow)
+        end = row['end'] if row['end'] else str(opts.end)
+        currow = {
+            'project_id': row['project_id'],
+            'id': row['id'],
+            'name': row['display_name'],
+            'volume_type': row['volume_type_name'],
+            'size': row['size'],
+            'start': datetime.datetime.strptime(row['start'], '%Y-%m-%d %H:%M:%S'),
+            'end': datetime.datetime.strptime(end, '%Y-%m-%d %H:%M:%S'),
+        }
+        currow['gbhours'] = currow['size']*(currow['end'] - currow['start']).total_seconds()/60/60
+        rows[currow['project_id']].append(currow)
     return rows
 
 
@@ -672,54 +687,32 @@ def create_nova_report(project, nova_summary, instances, opts):
 def create_cinder_report(project, cinder_summary, cinder_detailed):
     report = []
     csvdata = []
-    header = ['volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
-    csvdata.append(header)
-    pt = prettytable.PrettyTable(header, print_empty=False)
-    for field in pt.field_names:
-        pt.align[field] = 'r'
-    pt.align['volume type'] = 'l'
-    global_quota = cinder_summary['usage']['']
-
-    for voltype, quota in cinder_summary['usage'].items():
-        volumes = quota['volumes']
-        if volumes['in_use'] == 0: continue
-        gigabytes = quota['gigabytes']
-        vol_limit = volumes['limit'] if volumes['limit'] != -1 else global_quota['volumes']['limit']
-        gb_limit = gigabytes['limit'] if gigabytes['limit'] != -1 else global_quota['gigabytes']['limit']
-        row = [voltype,
-               "%d" % volumes['in_use'],
-               "%.2f %%" % abs(volumes['in_use']*100.0/vol_limit),
-               "%d" % gigabytes['in_use'],
-               "%.2f %%" % abs(gigabytes['in_use']*100.0/gb_limit),
-        ]
-        csvdata.append(row)
-        pt.add_row(row)
-    table = str(pt)
-    if table:
-        report.append("Summary of storage usage for project %s\n" % project.name)
-        report.append(str(pt))
-    else:
-        report.append("No Cinder volumes used")
+    total_price = defaultdict(int)
 
     if cinder_detailed:
         header = ['id', 'name', 'Size (GiB)', 'GiB hours']
+        if opts.prices:
+            header.append("Cost")
 
-        pt = prettytable.PrettyTable(header, print_empty=False)
-        pt.align['name'] = 'l'
-        pt.align['Size (GiB)'] = 'r'
-        pt.align['GiB hours'] = 'r'
+        pt_det = prettytable.PrettyTable(header, print_empty=False)
+        pt_det.align['name'] = 'l'
+        pt_det.align['Size (GiB)'] = 'r'
+        pt_det.align['GiB hours'] = 'r'
+        if opts.prices:
+            pt_det.align['Cost'] = 'r'
 
-        for row in cinder_detailed:
-            gbhours = row[3]*(row[5] - row[4]).total_seconds()/60/60
-            newrow = [row[0], row[1], row[3], "%.2f" % gbhours]
-            pt.add_row(newrow)
-        report.append("\nDetailed usage for project %s - volumes\n" % project.name)
-        report.append(str(pt))
+        for voldata in cinder_detailed:
+            row = [voldata['id'], voldata['name'], voldata['size'], "%.2f" % voldata['gbhours']]
+            if opts.prices:
+                voldata['cost'] = compute_price_cinder(voldata)
+                total_price[voldata['volume_type']] += voldata['cost']
+                row.append('%.3f CHF' % voldata['cost'])
+            pt_det.add_row(row)
 
         # Also make the plot
         plotfile = ''
         vol_by_day = []
-        df = pd.DataFrame(cinder_detailed, columns=['id', 'name', 'type', 'size (GiB)', 'start', 'end', 'created_at', 'deleted_at'])
+        df = pd.DataFrame(cinder_detailed, columns=['id', 'name', 'type', 'size (GiB)', 'start', 'end', 'created_at', 'deleted_at', 'cost'])
         df.start = pd.to_datetime(df.start)
         df.end = pd.to_datetime(df.end)
         csvdata_detailed = [list(df.columns)]
@@ -762,6 +755,52 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
             plotfile = os.path.join(opts.datadir, 'cinder_plot_%s-%s_%s.png' % (
                 opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
             plt.savefig(plotfile)
+
+    # Summary data
+    header = ['volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
+    if opts.prices:
+        header.append('Cost')
+    csvdata.append(header)
+    pt = prettytable.PrettyTable(header, print_empty=False)
+    for field in pt.field_names:
+        pt.align[field] = 'r'
+    pt.align['volume type'] = 'l'
+    if opts.prices:
+        pt.align['Cost'] = 'r'
+
+    global_quota = cinder_summary['usage']['']
+    for voltype, quota in cinder_summary['usage'].items():
+        if voltype == '':
+            continue
+        volumes = quota['volumes']
+        if volumes['in_use'] == 0: continue
+        gigabytes = quota['gigabytes']
+        vol_limit = volumes['limit'] if volumes['limit'] != -1 else global_quota['volumes']['limit']
+        gb_limit = gigabytes['limit'] if gigabytes['limit'] != -1 else global_quota['gigabytes']['limit']
+        row = [voltype,
+               "%d" % volumes['in_use'],
+               "%.2f %%" % abs(volumes['in_use']*100.0/vol_limit),
+               "%d" % gigabytes['in_use'],
+               "%.2f %%" % abs(gigabytes['in_use']*100.0/gb_limit),
+        ]
+        if opts.prices:
+            row.append('%.2f CHF' % total_price.get(voltype, -1))
+        csvdata.append(row)
+        pt.add_row(row)
+    table = str(pt)
+    if table:
+        report.append("Summary of block storage usage for project %s" % project.name)
+        report.append("(Cost of block storage is based on detailed report)")
+        report.append('')
+        report.append(str(pt))
+    else:
+        report.append("No Cinder volumes used")
+
+    if cinder_detailed:
+        report.append('')
+        report.append("Detailed usage for project %s - volumes" % project.name)
+        report.append('')
+        report.append(str(pt_det))
 
     retdict = {'summary': csvdata}
     if cinder_detailed:
