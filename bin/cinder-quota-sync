@@ -1,0 +1,199 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-#
+#
+#
+# Copyright (C) 2016, S3IT, University of Zurich. All rights reserved.
+#
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+"""This tool updates the cinder quota_usages table based on the actual usage."""
+
+
+__docformat__ = 'reStructuredText'
+__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+
+import argparse
+import sys
+import ConfigParser
+import datetime
+from collections import defaultdict
+import re
+
+from prettytable import PrettyTable
+from sqlalchemy import and_
+from sqlalchemy import func
+from sqlalchemy import MetaData
+from sqlalchemy import select
+from sqlalchemy import update
+from sqlalchemy import create_engine
+
+
+### CONF functions
+def get_db_url(config_file):
+    parser = ConfigParser.SafeConfigParser()
+    try:
+        parser.read(config_file)
+        db_url = parser.get('database', 'connection')
+    except:
+        print "ERROR: Check cinder configuration file."
+        sys.exit(2)
+    return db_url
+
+### DB functions
+### NEW function
+
+
+class CinderUsage:
+    def __init__(self, sqlstring):
+        self.sqlstring = sqlstring
+        self.usage = defaultdict( # project_id
+            lambda: defaultdict( # volume type
+                lambda: defaultdict(int))) # resource name
+        self.actual_usage = defaultdict( # project_id
+            lambda: defaultdict( # volume type
+                lambda: defaultdict(int))) # resource name
+        self.diff = defaultdict( # project_id
+            lambda: defaultdict( # volume type
+                lambda: defaultdict(int))) # resource name
+        
+    def connect(self):
+        self.db = create_engine(self.sqlstring)
+        self.metadata = MetaData(bind=self.db)
+        self.metadata.reflect()
+        self.volumes = self.metadata.tables['volumes']
+        self.volume_types = self.metadata.tables['volume_types']
+        self.quota_usages = self.metadata.tables['quota_usages']
+
+        q = select(
+            columns=[self.volume_types.c.name],
+            whereclause=self.volume_types.c.deleted==0)
+        self.vtypes = [i for i, in q.execute()]
+        if '' not in self.vtypes:
+            self.vtypes.append('')
+
+    def update_quota_usage(self):
+        self.connect()
+        # gather porjects
+        q = select(
+            columns=[self.quota_usages.c.project_id],
+            whereclause=self.quota_usages.c.deleted==0,
+            group_by=[self.quota_usages.c.project_id])
+        for project_id, in q.execute():
+            # select quota usage for project
+            q = select(
+                columns=[self.quota_usages.c.resource,
+                         self.quota_usages.c.in_use],
+                whereclause=and_(self.quota_usages.c.project_id==project_id,
+                                 self.quota_usages.c.deleted==0))
+
+            for resource, in_use in q.execute():
+                m = re.search('(?P<resname>volumes|gigabytes)(_(?P<vtype>[a-zA-Z0-9-]+))?',
+                              resource)
+                if not m: continue
+                vtype = m.group('vtype') if m.group('vtype') else ''
+                self.usage[project_id][m.group('resname')][vtype] = in_use
+
+    def update_volumes(self):
+        self.connect()
+        q = select([self.volumes.c.project_id,
+                    self.volumes.c.volume_type_id,
+                    func.count(self.volumes.c.id),
+                    func.sum(self.volumes.c.size),
+                    self.volume_types.c.name]
+        ).select_from(
+            self.volumes.join(
+                self.volume_types,
+                self.volumes.c.volume_type_id==self.volume_types.c.id
+            )
+        ).where(self.volumes.c.deleted==0
+        ).group_by(self.volumes.c.project_id,
+                   self.volumes.c.volume_type_id,
+        )
+        for project_id, vtype, num, gb, vname in q.execute():
+            self.actual_usage[project_id]['gigabytes'][vname] = gb
+            self.actual_usage[project_id]['volumes'][vname] = num
+            self.actual_usage[project_id]['gigabytes'][''] += gb
+            self.actual_usage[project_id]['volumes'][''] += num
+
+    def update(self):
+        self.update_quota_usage()
+        self.update_volumes()
+
+    def compare(self):        
+        for pid, usage in self.actual_usage.items():
+            for resid, resusage in usage.items():
+                for vtype, in_use in resusage.items():
+                    if in_use != self.usage[pid][resid][vtype]:
+                        self.diff[pid][resid][vtype] = (in_use, self.usage[pid][resid][vtype])
+        return self.diff
+
+    def sync(self):
+        if not self.usage or not self.actual_usage:
+            self.update()
+            
+        if not self.diff:
+            self.compare()
+
+        # run update
+        self.db.echo = True
+        for pid, usage in self.diff.items():
+            for resid, resusage in usage.items():
+                for vtype, inuse in resusage.items():
+                    okvalue = inuse[0]
+                    resname = resid + '_' + vtype  if vtype else resid
+                    q = update(self.quota_usages).where(
+                        and_(self.quota_usages.c.project_id==pid,
+                             self.quota_usages.c.resource==resname)
+                    ).values(in_use=okvalue)
+                    q.execute()
+        self.db.echo = False
+
+def parse_cmdline_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--yes",
+        action="store_true",
+        help="automatically sync all resources (no interactive)")
+    parser.add_argument("--config",
+        default='/etc/cinder/cinder.conf',
+        help='configuration file')
+    return parser.parse_args()
+
+
+def main():
+    try:
+        args = parse_cmdline_args()
+    except Exception as e:
+        sys.stdout.write("Wrong command line arguments (%s)" % e.strerror)
+
+    db_url = get_db_url(args.config)
+    cinder = CinderUsage(db_url)
+    cinder.update()
+    data = cinder.compare()
+    if data:
+        pt = PrettyTable(['project id', 'resource', 'volume type', 'effective usage', 'reported usage', 'diff'])
+        pt.align['effective usage'] = 'r'
+        pt.align['reported usage'] = 'r'
+        pt.align['diff'] = 'r'
+        for pid, usage in data.items():
+            for resid, resusage in usage.items():
+                for vtype, inuse in resusage.items():
+                    pt.add_row([pid, resid, vtype, inuse[0], inuse[1], inuse[1]-inuse[0]])
+        print pt
+
+    if args.yes:
+        cinder.sync()
+        
+if __name__ == "__main__":
+    main()
