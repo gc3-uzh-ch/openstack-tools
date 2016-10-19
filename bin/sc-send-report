@@ -180,10 +180,11 @@ def send_mail_to(smtp, mailfrom, to, subject, text, plotfiles=[]):
                     Name=os.path.basename(plotfile))
                 part['Content-Disposition'] = 'attachment; filename="%s"' % os.path.basename(plotfile)
                 msg.attach(part)
-    s = smtplib.SMTP(smtp)
     log.info("Sending email to %s with subject \"%s\"", to, subject)
+    s = smtplib.SMTP(smtp)
     s.sendmail(mailfrom, [to], msg.as_string())
     s.quit()
+    log.info("Email successfully sent")
 
 
 ### Setup functions
@@ -401,13 +402,15 @@ def get_cinder_detailed(opts):
     metadata.reflect()
     volumes = metadata.tables['volumes']
     q = sql.select([
-        volumes.c.project_id,
-        volumes.c.id,
-        volumes.c.display_name,
-        volumes.c.volume_type_id,
-        volumes.c.size,
-        sqla.func.greatest(volumes.c.created_at, str(opts.start)),
-        sqla.func.least(volumes.c.deleted_at, str(opts.end))
+        volumes.c.project_id,     # 0
+        volumes.c.id,             # 1
+        volumes.c.display_name,   # 2
+        volumes.c.volume_type_id, # 3
+        volumes.c.size,           # 4
+        sqla.func.greatest(volumes.c.created_at, str(opts.start)).label('start'), # 5
+        sqla.func.least(volumes.c.deleted_at, str(opts.end)).label('end'), # 6
+        volumes.c.created_at, # 7
+        volumes.c.deleted_at, # 8
     ]).where(
             sql.and_(volumes.c.deleted==0,
                      sql.not_(
@@ -427,10 +430,10 @@ def get_cinder_detailed(opts):
 
     for row in results.fetchall():
         currow = list(row[1:])
-        if currow[-1] is None:
-            currow[-1] = str(opts.end)
-        currow[-2] = datetime.datetime.strptime(currow[-2], '%Y-%m-%d %H:%M:%S')
-        currow[-1] = datetime.datetime.strptime(currow[-1], '%Y-%m-%d %H:%M:%S')
+        if currow[5] is None:
+            currow[5] = str(opts.end)
+        currow[4] = datetime.datetime.strptime(currow[4], '%Y-%m-%d %H:%M:%S')
+        currow[5] = datetime.datetime.strptime(currow[5], '%Y-%m-%d %H:%M:%S')
         rows[row[0]].append(currow)
     return rows
         
@@ -686,13 +689,13 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
         # Also make the plot
         plotfile = ''
         vol_by_day = []
-        df = pd.DataFrame(cinder_detailed, columns=['id', 'name', 'type', 'size (GiB)', 'created_at', 'deleted_at'])
-        df.created_at = pd.to_datetime(df.created_at)
-        df.deleted_at = pd.to_datetime(df.deleted_at)
+        df = pd.DataFrame(cinder_detailed, columns=['id', 'name', 'type', 'size (GiB)', 'start', 'end', 'created_at', 'deleted_at'])
+        df.start = pd.to_datetime(df.start)
+        df.end = pd.to_datetime(df.end)
         csvdata_detailed = [list(df.columns)]
         csvdata_detailed += df.values.tolist()
         for t in pd.date_range(opts.start, opts.end):
-            d = df[~((df.deleted_at < t) | (df.created_at > t))]
+            d = df[~((df.end < t) | (df.start > t))]
             vol_by_day.append((t, d['id'].count(), d['size (GiB)'].sum()))
 
         ts = pd.DataFrame(vol_by_day, columns=['date', 'volumes', 'GiB used'])
@@ -936,12 +939,16 @@ def main(opts):
             for recipient in recipients:
                 if recipient:
                     try:
+                        plotfiles = []
+                        for service in ('nova', 'cinder'):
+                            if service in report and report[service].get('plot'):
+                                plotfiles.append(report[service].get('plot'))
                         send_mail_to(opts.smtp,
                                      opts.mail_from,
                                      recipient,
                                      "%s usage for project %s from %s to %s" % (opts.cloud_name, pdict['name'], opts.start, opts.end),
                                      report['msg'],
-                                     report['nova']['plot'])
+                                     plotfiles)
                     except Exception as ex:
                         log.error(
                             "Unable to send report email for project %s to"
