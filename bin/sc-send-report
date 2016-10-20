@@ -105,10 +105,11 @@ FLAVOR_COSTS.update({'{}cpu-{}ram-server'.format(i, i): i*cost_base_server for i
 
 ### Converion functions
 def compute_price_nova(instance):
-    cpuhours = instance['hours'] * instance['vcpus']
+    # hours is actuall cpu-hours, so vcpus * duration
+    cpuhours = instance['hours']
     cost = FLAVOR_COSTS.get(instance['flavor'])
     if not cost:
-        cost = instance['vcpus'] * cost_base_hpc
+        cost = cost_base_hpc
     return cpuhours * cost
 
 def compute_price_cinder(volume):
@@ -491,8 +492,8 @@ def get_nova_detailed(opts):
         instances.c.project_id,
         instances.c.vcpus,
         instances.c.memory_mb,
-        instances.c.launched_at.label('started_at'),
-        instances.c.terminated_at.label('ended_at'),
+        sqla.func.greatest(instances.c.launched_at, instances.c.created_at).label('started_at'),
+        sqla.func.least(instances.c.terminated_at, instances.c.deleted_at).label('ended_at'),
         flavors.c.name.label('flavor'),
         sqla.func.greatest(instances.c.created_at, str(opts.start)).label('start'), # 5
         sqla.func.least(instances.c.deleted_at, str(opts.end)).label('end'), # 6
@@ -646,7 +647,7 @@ def create_nova_report(project, nova_summary, instances, opts):
     ]
     if opts.prices:
         header_detailed.append('Cost')
-    csvdata_detailed.append(header_detailed)
+    csvdata_detailed.append(header_detailed + ['started_at', 'ended_at', 'memory_mb'])
     pt_det = prettytable.PrettyTable(header_detailed, print_empty=False)
     pt_det.align['instance name'] = 'l'
     pt_det.align['flavor'] = 'l'
@@ -668,8 +669,12 @@ def create_nova_report(project, nova_summary, instances, opts):
             total_price += price
             row.append("%.4f CHF" % price)
 
-        csvdata_detailed.append(row)
         pt_det.add_row(row)
+        row += [instance['started_at'],
+                instance['ended_at'],
+                instance['memory_mb'],
+        ]
+        csvdata_detailed.append(row)
 
     # Finally, add to the report
 
