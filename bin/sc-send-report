@@ -785,14 +785,15 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
         # Also make the plot
         plotfile = ''
         vol_by_day = []
-        df = pd.DataFrame(cinder_detailed, columns=['id', 'name', 'type', 'size (GiB)', 'start', 'end', 'created_at', 'deleted_at', 'cost'])
+
+        df = pd.DataFrame(cinder_detailed)
         df.start = pd.to_datetime(df.start)
         df.end = pd.to_datetime(df.end)
         csvdata_detailed = [list(df.columns)]
         csvdata_detailed += df.values.tolist()
         for t in pd.date_range(opts.start, opts.end):
             d = df[~((df.end < t) | (df.start > t))]
-            vol_by_day.append((t, d['id'].count(), d['size (GiB)'].sum()))
+            vol_by_day.append((t, d['id'].count(), d['size'].sum()))
 
         ts = pd.DataFrame(vol_by_day, columns=['date', 'volumes', 'GiB used'])
         ts.index = ts.date
