@@ -103,14 +103,25 @@ cost_vhp_cinder = 100.0/1024/365/24
 FLAVOR_COSTS = {'{}cpu-{}ram-hpc'.format(i, i*4): i*cost_base_hpc for i in (1,2,4,8,16,32)}
 FLAVOR_COSTS.update({'{}cpu-{}ram-server'.format(i, i): i*cost_base_server for i in (1,2,4,8)})
 
+### amazon costs
+# c4.large	2	8	3.75	EBS Only	$0.105 per Hour
+amazon_cost_base_hpc = 0.05
+# t2.micro	1	Variable	1	EBS Only	$0.013 per Hour
+amazon_cost_base_server = 0.013
+
+# Amazon EBS Throughput Optimized HDD (st1) volumes
+# $0.045 per GB-month of provisioned storage
+amazon_cost_base_cinder = 0.045/30/24
+
 ### Converion functions
 def compute_price_nova(instance):
     # hours is actuall cpu-hours, so vcpus * duration
     cpuhours = instance['hours']
+    duration = cpuhours/instance['vcpus']
     cost = FLAVOR_COSTS.get(instance['flavor'])
     if not cost:
-        cost = cost_base_hpc
-    return cpuhours * cost
+        cost = cost_base_hpc * instance['vcpus']
+    return duration * cost
 
 def compute_price_cinder(volume):
     if volume['volume_type'] == 'vhp':
@@ -301,8 +312,8 @@ def setup():
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
     parser.add_argument('--prices', action='store_true', help='Also include prices')
-    parser.add_argument('--nova-mysql-string', help='MySQL string to access cinder database')
-    parser.add_argument('--cinder-mysql-string', help='MySQL string to access cinder database')
+    parser.add_argument('--nova-mysql-string', required=True, help='MySQL string to access cinder database')
+    parser.add_argument('--cinder-mysql-string', required=True, help='MySQL string to access cinder database')
     parser.add_argument('--swift-mysql-string', help='MySQL string to access swift accounting database')
     parser.add_argument('--plots', action='store_true', help='Attach a plot with the usage')
     parser.add_argument('--yesterday', action='store_true', help='Get reports from yesterda')
@@ -345,15 +356,6 @@ def setup():
     return opts
 
 ### OpenStack functions
-
-def get_nova_summary(opts, sess=None):
-    """Get summary usage from Nova"""
-    ### FIXME: use sql if possible to get all and only information we need
-    if not sess:
-        sess = make_session(opts)
-    nclient = nova_client.Client('2', session=sess)
-    usage = nclient.usage.list(opts.start, opts.end, detailed=True)
-    return {i.tenant_id: i for i in usage}
 
 class CinderChecker(mp.Process):
     def __init__(self, tasks, results, opts):
@@ -479,7 +481,7 @@ def get_cinder_detailed(opts):
     return rows
 
 
-def get_nova_detailed(opts):    
+def get_nova_detailed(opts):
     db = sqla.create_engine(opts.nova_mysql_string, echo=False)
     metadata = sqla.MetaData(bind=db)
     metadata.reflect()
@@ -531,9 +533,9 @@ def get_nova_detailed(opts):
         }
         currow['hours'] = currow['vcpus']*(currow['end'] - currow['start']).total_seconds()/60/60
         instances[currow['project_id']].append(currow)
-    
+
     return instances
-                   
+
 class SwiftChecker(mp.Process):
     def __init__(self, tasks, results, opts):
         mp.Process.__init__(self)
@@ -657,7 +659,7 @@ def create_nova_report(project, nova_summary, instances, opts):
         pt_det.align['Cost'] = 'r'
 
     for uuid, instance in instances.items():
-        cpuhours = instance['hours'] * instance['vcpus']
+        cpuhours = instance['hours']
         row = [uuid,
                instance['name'],
                instance['flavor'],
@@ -968,18 +970,12 @@ def main(opts):
     if 'cinder' in services:
         # Get summary from cinder
         cinder_summary = get_cinder_summary(opts, projects.values(), sess=sess)
-        if opts.cinder_mysql_string:
-            cinder_detailed = get_cinder_detailed(opts)
-        else:
-            cinder_detailed = defaultdict(list)
+        cinder_detailed = get_cinder_detailed(opts)
 
     if 'nova' in services:
         # Get usage from nova
         instances = {}
-        if opts.nova_mysql_string:
-            summary = get_nova_detailed(opts)
-        else:
-            summary = get_nova_summary(opts, sess=sess)
+        summary = get_nova_detailed(opts)
         for report in summary.values():
             instances.update({i['instance_id']: i for i in report.server_usages})
 
