@@ -755,6 +755,8 @@ def create_nova_report(project, nova_summary, instances, opts):
             plotfile = os.path.join(opts.datadir, 'nova_plot_%s-%s_%s.png' % (
                 opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
             plt.savefig(plotfile)
+            plt.clf()
+            plt.close('all')
 
     return (str.join('\n', report), {'summary': csvdata, 'detailed': csvdata_detailed, 'plot': plotfile})
 
@@ -800,37 +802,40 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
         ts = pd.DataFrame(vol_by_day, columns=['date', 'volumes', 'GiB used'])
         ts.index = ts.date
 
-        with plt.xkcd():
-            # because we are not serious people...
-            fig, ax = plt.subplots()
-            axes = [ax, ax.twinx()]
-            p1 = axes[0].plot(ts['volumes'], 'b-')
-            p2 = axes[1].plot(ts['GiB used'], 'r-')
-            # because we are not serious people...
-            # fig = plt.figure()
-            # ax1 = fig.add_subplot(111)
-            # ax1.plot(ts['volumes'])
-            # ax1.set_ylabel('volumes')
-            axes[0].set_ylim(0, ts['volumes'].max()+1)
-            axes[1].set_ylim(0, ts['GiB used'].max()*1.2)
-            # ax2 = fig.add_subplot(111, sharex=ax1)
-            # ax2.plot(ts['GiB used'])
-            # ax2.yaxis.tick_right()
-            # ax2.set_ylim(0, ts['GiB used'].max()+10)
-            # ax2.yaxis.set_label_position("right")
-            axes[0].set_ylabel('volumes')
-            axes[1].set_ylabel('gigabytes')
+        if opts.plots:
+            with plt.xkcd():
+                # because we are not serious people...
+                fig, ax = plt.subplots()
+                axes = [ax, ax.twinx()]
+                p1 = axes[0].plot(ts['volumes'], 'b-')
+                p2 = axes[1].plot(ts['GiB used'], 'r-')
+                # because we are not serious people...
+                # fig = plt.figure()
+                # ax1 = fig.add_subplot(111)
+                # ax1.plot(ts['volumes'])
+                # ax1.set_ylabel('volumes')
+                axes[0].set_ylim(0, ts['volumes'].max()+1)
+                axes[1].set_ylim(0, ts['GiB used'].max()*1.2)
+                # ax2 = fig.add_subplot(111, sharex=ax1)
+                # ax2.plot(ts['GiB used'])
+                # ax2.yaxis.tick_right()
+                # ax2.set_ylim(0, ts['GiB used'].max()+10)
+                # ax2.yaxis.set_label_position("right")
+                axes[0].set_ylabel('volumes')
+                axes[1].set_ylabel('gigabytes')
 
-            plt.legend((p1[0], p2[0]), (p1[0].get_label(), p2[0].get_label()), loc=0)
-            fig.autofmt_xdate()
-            # Set title
-            ax.set_title("Cinder volumes and used space for project %s\nfrom %s to %s" % (
-                project.name, opts.start, opts.end))
+                plt.legend((p1[0], p2[0]), (p1[0].get_label(), p2[0].get_label()), loc=0)
+                fig.autofmt_xdate()
+                # Set title
+                ax.set_title("Cinder volumes and used space for project %s\nfrom %s to %s" % (
+                    project.name, opts.start, opts.end))
 
-            # Save to file
-            plotfile = os.path.join(opts.datadir, 'cinder_plot_%s-%s_%s.png' % (
-                opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
-            plt.savefig(plotfile)
+                # Save to file
+                plotfile = os.path.join(opts.datadir, 'cinder_plot_%s-%s_%s.png' % (
+                    opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
+                plt.savefig(plotfile)
+                plt.clf()
+                plt.close('all')
 
     # Summary data
     header = ['volume type', 'volumes', 'quota usage (volumes)', 'gigabytes', 'quota usage (gigabytes)']
