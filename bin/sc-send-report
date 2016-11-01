@@ -51,6 +51,11 @@ import sqlalchemy.sql as sql
 
 PLOT_ENABLED=True
 try:
+    # matplotlib doesn't play nice when X11 is not present.
+    # cfr. http://stackoverflow.com/questions/2801882/generating-a-png-with-matplotlib-when-display-is-undefined
+    import matplotlib
+    matplotlib.use('Agg')
+
     import pandas as pd
     from matplotlib import pylab as plt
 except ImportError as ex:
