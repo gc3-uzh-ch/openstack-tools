@@ -755,7 +755,8 @@ def create_nova_report(project, nova_summary, instances, opts):
             # Set title
             fig.axes[0].set_title("VMs and vCPUs usage for project %s\nfrom %s to %s" % (
                 project.name, opts.start, opts.end))
-
+            ylim = plt.ylim()
+            plt.ylim((ylim[0]-ts.vcpus.min(), ylim[1]+ts.vcpus.min()))
             # Save to file
             plotfile = os.path.join(opts.datadir, 'nova_plot_%s-%s_%s.png' % (
                 opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
