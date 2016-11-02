@@ -47,6 +47,7 @@ except ImportError:
     from keystoneclient.exceptions import NotFound
 
 from novaclient import client as nova_client
+from neutronclient.v2_0 import client as neutron_client
 
 import swiftclient
 
@@ -61,6 +62,12 @@ DEFAULT_SECGROUP_RULES = [
 USERS_MAILING_LIST='https://lists.uzh.ch/s3it.lists.uzh.ch/sympa/review/cloud'
 # Default swift quota is 0 for the time being
 DEFAULT_SWIFT_QUOTA = 0
+
+DEFAULT_QUOTA = {
+    'swift': 0,
+    'neutron':
+    {'floatingip': 0},
+}
 
 UZH_FACULTIES = [
     'MED',
@@ -260,6 +267,7 @@ def setup_default_security_group(opts, sess):
             print("Ignoring error '%s' when adding rule %s to security group"
             "'%s'" % (ex, rule, secgroup.name))
 
+    
 def setup_default_swift_quota(opts):
     print("Setting up default swift quota")
     sess = make_session(opts)
@@ -284,12 +292,22 @@ def setup_default_swift_quota(opts):
     try:
         swiftclient.post_account(url=storage_url,
                                  token=token,
-                                 headers={'x-account-meta-quota-bytes': str(DEFAULT_SWIFT_QUOTA)})
+                                 headers={'x-account-meta-quota-bytes': str(DEFAULT_QUOTA['swift'])})
     except Exception as ex:
         log.error("Failed to set SWIFT quota %s to tenant %s: %s",
-                  DEFAULT_SWIFT_QUOTA, opts.name, ex)
+                  DEFAULT_QUOTA['swift'], opts.name, ex)
 
+def setup_neutron_quota(opts, sess, project):
+    client = neutron_client.Client(session=sess)
+    print("Updating neutron quota to: %s" % DEFAULT_QUOTA['neutron'])
+    client.update_quota(project.id, {'quota': DEFAULT_QUOTA['neutron']})
+        
+def setup_default_quota(opts, sess, project):
+    print("Setting up default quota for project %s." % opts.name)
+    setup_neutron_quota(opts, sess, project)
 
+    setup_default_swift_quota(opts)
+    
 
 # From https://gist.github.com/blinks/47987
 def verify_email_address(addr, mail_from, skip_delivery_check=False):
@@ -348,7 +366,7 @@ def main(opts):
         print("Project %s already exists. Nothing to do." % opts.name)
         return 1
     setup_default_security_group(opts, sess)
-    setup_default_swift_quota(opts)
+    setup_default_quota(opts, sess, project)
     print_postinstall_info(opts)
 
 
