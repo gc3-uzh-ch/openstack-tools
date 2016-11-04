@@ -357,7 +357,7 @@ def update_neutron_quota(opts, project):
             continue
         quota_update[name] = newvalue
         strdelta = "+%d" % delta if delta>0 else "%d" % delta
-        changelog.append('%s: %d (%s)' % (name, value, strdelta))
+        changelog.append('%s: %d (%s)' % (name, newvalue, strdelta))
 
     # Update quota
     # Update history
