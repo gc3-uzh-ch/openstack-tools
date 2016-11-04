@@ -593,7 +593,7 @@ class SwiftChecker(mp.Process):
         log.debug("REPORT for project: %s: %s", project['name'], acc_report)
         return acc_report
 
-def get_swift_summary(opts, projects, sess=None):
+def get_swift_summary_live(opts, projects, sess=None):
     reports = {}
     tasks = mp.JoinableQueue()
     results = mp.Queue()
@@ -635,6 +635,39 @@ def get_swift_summary(opts, projects, sess=None):
     # while not results.empty():
         reports.append(results.get())
     return {r['project']['id']:r for r in reports}
+
+def get_swift_summary(opts, projects, sess=None):
+    db = sqla.create_engine(opts.swift_mysql_string, echo=False)
+    metadata = sqla.MetaData(bind=db)
+    metadata.reflect()
+    swift = metadata.tables['swift_accounting']
+    q = sql.select([swift.c.project_id,
+                    swift.c.project_name,
+                    swift.c.policy,
+                    swift.c.containers,
+                    swift.c.objects,
+                    swift.c.size_b,
+                    swift.c.last_seen,
+                    swift.c.timestamp,
+    ])
+
+    if not projects:
+        q = q.where(sql.and_(swift.c.timestamp>=opts.start,
+                             swift.c.timestamp<=opts.end))
+    else:
+        cond = [swift.c.timestamp>=opts.start,
+                swift.c.timestamp<=opts.end] + [swift.c.project_id==p.id for p in projects]
+        q = q.where(sql.and_(*cond))
+
+    q = q.order_by(swift.c.timestamp)
+    results = q.execute()
+
+    report = defaultdict(list)
+    for row in results.fetchall():
+        drow = dict(row)
+        report[drow['project_id']].append(drow)
+
+    return report
 
 ### Reporting functions
 
@@ -889,42 +922,91 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
         report.append('')
         report.append(str(pt_det))
 
-    retdict = {'summary': csvdata}
+    reportdata = {'summary': csvdata}
     if cinder_detailed:
-        retdict['detailed'] = csvdata_detailed
-        retdict['plot'] = plotfile
-    return (str.join('\n', report), retdict)
+        reportdata['detailed'] = csvdata_detailed
+        reportdata['plot'] = plotfile
+    return (str.join('\n', report), reportdata)
 
 def create_swift_report(project, swift_summary):
+    report = []
+    df = pd.DataFrame(swift_summary)
+    if not len(df):
+        # No data
+        return ("No SWIFT storage used", {})
+
+    # This is a timeseries of the swift usage.
+    # We get the average and the current usage
+    current = df.groupby('policy', as_index=False).last()
+    
+    pt = prettytable.PrettyTable(['Storage Policy', 'objects', 'containers', 'bytes', 'size'])
+    pt.align['Storage Policy'] = 'l'
+    pt.align['objects'] = 'r'
+    pt.align['containers'] = 'r'
+    pt.align['bytes'] = 'r'
+    pt.align['size'] = 'r'
+
+    for policy, values in current.iterrows():
+        pt.add_row([policy,
+                    values.objects,
+                    values.containers,
+                    values.size_b,
+                    b_to_human(values.size_b)])
+    report.append("Summary of SWIFT storage for project %s\n" % project.name)
+    report.append(str(pt))
+
+    # Plot data
+    plotfile = ''
+    if opts.plots:
+        df.index = df.timestamp
+
+        df['tb'] = df.size_b/2.0**40
+        
+        with plt.xkcd():
+            # because we are not serious people...
+            fig = plt.figure()
+            for policy in df.policy.unique():
+                tspol = df[df.policy==policy]
+                plt.plot(tspol['tb'], label='%s (TiB)' % policy)
+            plt.legend(loc=0)
+
+            fig.autofmt_xdate()
+            fig.axes[0].set_title("SWIFT Space used in gigabytes from %s to %s" % (opts.start, opts.end))
+
+            plotfile = os.path.join(opts.datadir, 'swift_plot_%s-%s_%s.png' % (
+                opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
+            plt.savefig(plotfile)
+            plt.clf()
+            plt.close('all')
+
+    reportdata = {
+        'summary': [current.columns.tolist()] + current.values.tolist(),
+        'detailed': [df.columns.tolist()] + df.values.tolist(),
+        'plot': plotfile,
+    }
+    return (str.join('\n', report), reportdata)
+
+    
+def create_swift_report_old(project, swift_summary):
     if not swift_summary or (swift_summary['objects'] ==  swift_summary['containers'] == 0):
         return ("No SWIFT storage used", {})
 
     report = []
-    header = ['objects', 'containers', 'bytes', 'quota', 'quota usage']
+    header = ['objects', 'containers', 'bytes']
     csvdata = [header]
     pt = prettytable.PrettyTable(header)
     for k in pt.align:
         pt.align[k] = 'r'
 
-    if swift_summary['quota'] > 1:
-        quota_p = "%.2f %%" % (float(swift_summary['bytes'])*100/int(swift_summary['quota']))
-    elif swift_summary['quota'] == 0:
-        quota_p = '100%'
-    else:
-        quota_p = '0%'
     row = ["%d (%s)" % (swift_summary['objects'], n_to_human(swift_summary['objects'])),
            "%d (%s)" % (swift_summary['containers'], n_to_human(swift_summary['containers'])),
            "%d (%s)" % (swift_summary['bytes'], b_to_human(swift_summary['bytes'])),
-           "%d (%s)" % (swift_summary['quota'], b_to_human(swift_summary['quota'])),
-           quota_p
     ]
     pt.add_row(row)
     csvdata.append([
         swift_summary['objects'],
         swift_summary['containers'],
         swift_summary['bytes'],
-        swift_summary['quota'],
-        quota_p
     ])
     report.append("Summary of SWIFT storage for project %s\n" % project.name)
     report.append(str(pt))
@@ -976,7 +1058,7 @@ def main(opts):
 
     if 'swift' in services:
         # Get usage from swift
-        swift_summary = get_swift_summary(opts, projects)
+        swift_summary = get_swift_summary(opts, projects.values())
 
     if 'cinder' in services:
         # Get summary from cinder
