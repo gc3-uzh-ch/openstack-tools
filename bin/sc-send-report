@@ -960,18 +960,19 @@ def create_swift_report(project, swift_summary):
     if opts.plots:
         df.index = df.timestamp
 
-        df['tb'] = df.size_b/2.0**40
-        
+        df['GiB'] = df.size_b/2.0**30
+        df['TiB'] = df.size_b/2.0**40
+        col = 'TiB' if df['TiB'].max() > 1 else 'GiB'
         with plt.xkcd():
             # because we are not serious people...
             fig = plt.figure()
             for policy in df.policy.unique():
                 tspol = df[df.policy==policy]
-                plt.plot(tspol['tb'], label='%s (TiB)' % policy)
+                plt.plot(tspol[col], label='%s (%s)' % (policy, col))
             plt.legend(loc=0)
 
             fig.autofmt_xdate()
-            fig.axes[0].set_title("SWIFT Space used in gigabytes from %s to %s" % (opts.start, opts.end))
+            fig.axes[0].set_title("SWIFT Space used in %s\nfrom %s to %s" % (col, opts.start, opts.end))
 
             plotfile = os.path.join(opts.datadir, 'swift_plot_%s-%s_%s.png' % (
                 opts.start.strftime('%Y-%m-%d'), opts.end.strftime('%Y-%m-%d'), project.name))
@@ -1057,8 +1058,8 @@ def main(opts):
     log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
 
     if 'swift' in services:
-        # Get usage from swift
-        swift_summary = get_swift_summary(opts, projects.values())
+        # Get usage from swift        
+        swift_summary = get_swift_summary(opts, projects.values() if opts.project else [])
 
     if 'cinder' in services:
         # Get summary from cinder
