@@ -33,7 +33,6 @@ import sys
 
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
-
 from novaclient import client as nova_client
 
 
@@ -120,7 +119,12 @@ if __name__ == "__main__":
 
     sess = make_session(args)
     nclient = nova_client.Client('2', session=sess)
-    all_vms = nclient.servers.list(search_opts={'all_tenants':True})
+    try:
+        all_vms = nclient.servers.list(search_opts={'all_tenants':True})
+    except Exception as ex:
+        if args.silent:
+            log.error("Unable to continue. Caught exception %s while getting list of VMs. Cleanly exiting as requested by --silent" % ex)
+            sys.exit(0)
     flavors = { flv.id: flv for flv in nclient.flavors.list(is_public=None)}
     try:
         # Get the total number of vcpus, if possible
