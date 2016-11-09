@@ -136,11 +136,13 @@ def setup():
                         '"OS_PROJECT_NAME" environment variable is used.')
     parser.add_argument('--os-user-domain-name',
                         action=EnvDefault,
+                        default='default',
                         envvar="OS_USER_DOMAIN_NAME",
                         help='OpenStack administrator user name. If not supplied, the value of the '
                         '"OS_USER_DOMAIN_NAME" environment variable is used.')
     parser.add_argument('--os-project-domain-name',
                         action=EnvDefault,
+                        default='default',
                         envvar="OS_PROJECT_DOMAIN_NAME",
                         help='OpenStack administrator project name. If not supplied, the value of the '
                         '"OS_PROJECT_DOMAIN_NAME" environment variable is used.')
