@@ -32,6 +32,7 @@ import os
 import prettytable
 import sys
 from collections import OrderedDict
+import datetime
 
 from keystoneclient.auth.identity import v3
 from keystoneclient import session
@@ -338,6 +339,8 @@ def print_table(data):
 if __name__ == "__main__":
     opts = setup()
     data = main(opts)
+    data['timestamp'] = datetime.datetime.utcnow().strftime('%d/%m/%Y %H:%M:%S UTC')
+
     if opts.json:
         print(json.dumps(data))
     else:
