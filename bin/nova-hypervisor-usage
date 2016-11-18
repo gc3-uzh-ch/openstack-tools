@@ -261,6 +261,8 @@ def main(opts):
         ('vcpus used', used_cpus),
         ('vcpus usage %', '%.2f %%' % (float(used_cpus)/avail_cpus*100)),
         ('vms', len(all_vms)),
+        ('mem', sum(h.memory_mb for h in enabled_hypervisors)),
+        ('mem_used', sum(h.memory_mb_used for h in enabled_hypervisors)),
     ])
 
     # For each flavor, check how many can be ran
@@ -289,6 +291,17 @@ def main(opts):
              'current': len([vm for vm in all_vms if vm.flavor['id'] == flavor.id]),
              'max': maxf,
              'avail': availf})
+
+    # Finally, collect data on allocated quota
+    keystone = keystone_client.Client(session=sess)
+    quota_allocation = {'vcpus': 0,
+                        'mem': 0,
+    }
+    for project in keystone.projects.list():
+        quota = nova.quotas.get(project.id)
+        quota_allocation['vcpus'] += quota.cores
+        quota_allocation['mem'] += quota.ram
+    data['quota_allocation'] = quota_allocation
     return data
 
 def print_table(data):
@@ -320,6 +333,7 @@ def print_table(data):
     pt.align['value'] = 'r'
     for key,value in data['summary'].items():
         pt.add_row([key, value])
+    print("Summary")
     print(pt)
 
     # Print detailed flavor information
@@ -334,7 +348,30 @@ def print_table(data):
                     flavor['current'],
                     flavor['max'],
                     flavor['avail']])
+    print("Per-flavor usage and availability")
     print(pt.get_string(sortby='max', reversesort=True))
+
+    # Print allocation based on quota
+    pt = prettytable.PrettyTable(('name', 'current', 'max', 'allocated', 'overbooking'))
+    for field in pt.field_names:
+        pt.align[field] = 'r'
+    pt.align['name'] = 'l'
+    pt.add_row([
+        'vcpus',
+        data['summary']['vcpus'],
+        data['summary']['vcpus used'],
+        data['quota_allocation']['vcpus'],
+        "%.2f %%" % (data['quota_allocation']['vcpus']*100.0/data['summary']['vcpus']),
+    ])
+    pt.add_row([
+        'ram',
+        mib_to_str(data['summary']['mem']),
+        mib_to_str(data['summary']['mem_used']),
+        mib_to_str(data['quota_allocation']['mem']),
+        "%.2f %%" % (data['quota_allocation']['mem']*100.0/data['summary']['mem']),
+    ])
+    print("Quota allocation")
+    print(pt)
 
 if __name__ == "__main__":
     opts = setup()
