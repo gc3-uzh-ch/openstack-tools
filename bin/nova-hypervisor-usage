@@ -44,9 +44,15 @@ except ImportError:
     from keystoneclient.exceptions import NotFound
 
 from novaclient import client as nova_client
+from cinderclient import client as cinder_client
 
 log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
+
+DEFAULT = {
+    'CEPH_VMS_SIZE': 644 * 2**20 * 0.4,
+    'CEPH_CINDER_SIZE': 644 * 2**20 * 0.6,
+}
 
 def mib_to_str(value):
     if abs(value) > 2**20:
@@ -156,7 +162,7 @@ def setup():
     parser.add_argument('-l', '--long', action='store_true')
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
-
+    parser.add_argument('--cinder', action='store_true')
     opts = parser.parse_args()
 
     # Set verbosity
@@ -209,7 +215,9 @@ def main(opts):
     sess = make_session(opts)
     #keystone = keystone_client.Client(session=sess)
     nova = nova_client.Client('2', session=sess)
-
+    if opts.cinder:
+        cinder = cinder_client.Client('2', session=sess)
+    
     #stats = nova.hypervisors_stats.statistics()
     aggregates = nova.aggregates.list()
     hypervisors = nova.hypervisors.list()
@@ -249,12 +257,16 @@ def main(opts):
                 'mem_free': hyp.memory_mb_free,
                 })
 
-
+    flavors = {fl.id:fl for fl in nova.flavors.list(is_public=None)}
+    if opts.cinder:
+        volumes = cinder.volumes.list(search_opts={'all_tenants': 'true'})
+    
     # Collect data on the general availability of vcpus and memory
     enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
 
     avail_cpus = sum(h.vcpus*h.cpu_allocation_ratio for h in enabled_hypervisors)
     used_cpus = sum(h.vcpus_used for h in hypervisors)
+    
     data['summary'] = OrderedDict([
         ('hypervisors', len(hypervisors)),
         ('hypervisors enabled', len(enabled_hypervisors)),
@@ -266,7 +278,10 @@ def main(opts):
         ('vms', len(all_vms)),
         ('mem', sum(h.memory_mb for h in enabled_hypervisors)),
         ('mem_used', sum(h.memory_mb_used for h in enabled_hypervisors)),
+        ('disk_used', sum(flavors[vm.flavor['id']].disk for vm in all_vms if vm.flavor['id'] in flavors)*1024),
     ])
+    if opts.cinder:
+        data['summary']['volumes_used'] =  sum(v.size for v in volumes)*1024
 
     # For each flavor, check how many can be ran
     if len(enabled_hypervisors) != hypervisors:
@@ -284,7 +299,7 @@ def main(opts):
     # http://developer.openstack.org/api-ref/compute/?expanded=list-flavors-with-details-detail
     #
     # Also check https://github.com/openstack/nova/blob/master/nova/api/openstack/compute/flavors.py#L61
-    for flavor in nova.flavors.list(is_public=None):
+    for flavor in flavors.values():
         flavor = ProxyFlavor(flavor)
         log.debug("Computing capability for flavor %s" % flavor.name)
         maxf, availf, availf_enabled = compute_capability(flavor, enabled_hypervisors)
@@ -301,11 +316,20 @@ def main(opts):
     keystone = keystone_client.Client(session=sess)
     quota_allocation = {'vcpus': 0,
                         'mem': 0,
+                        'vms_disk': 0,
     }
+    if opts.cinder:
+        quota_allocation['cinder_mb'] = 0
+
     for project in keystone.projects.list():
         quota = nova.quotas.get(project.id)
         quota_allocation['vcpus'] += quota.cores
         quota_allocation['mem'] += quota.ram
+        quota_allocation['vms_disk'] += quota.instances * 100 * 1024
+        if opts.cinder:
+            cquota = cinder.quotas.get(project.id)
+            quota_allocation['cinder_mb'] += cquota.gigabytes * 1024
+
     data['quota_allocation'] = quota_allocation
     return data
 
@@ -360,7 +384,7 @@ def print_table(data):
     print(pt.get_string(sortby='max', reversesort=True))
 
     # Print allocation based on quota
-    pt = prettytable.PrettyTable(('name', 'current', 'max', 'allocated', 'overbooking'))
+    pt = prettytable.PrettyTable(('name', 'available', 'used', 'allocated', 'overbooking'))
     for field in pt.field_names:
         pt.align[field] = 'r'
     pt.align['name'] = 'l'
@@ -378,6 +402,21 @@ def print_table(data):
         mib_to_str(data['quota_allocation']['mem']),
         "%.2f %%" % (data['quota_allocation']['mem']*100.0/data['summary']['mem']),
     ])
+    pt.add_row([
+        'root disk',
+        mib_to_str(DEFAULT['CEPH_VMS_SIZE']),
+        mib_to_str(data['summary']['disk_used']),
+        mib_to_str(data['quota_allocation']['vms_disk']),
+        "%.2f %%" % (data['quota_allocation']['vms_disk']*100.0/DEFAULT['CEPH_VMS_SIZE']),
+    ])
+    if 'volumes_used' in data['summary']:
+        pt.add_row([
+            'volumes',
+            mib_to_str(DEFAULT['CEPH_CINDER_SIZE']),
+            mib_to_str(data['summary']['volumes_used']),
+            mib_to_str(data['quota_allocation']['cinder_mb']),
+            "%.2f %%" % (data['quota_allocation']['cinder_mb']*100.0/DEFAULT['CEPH_VMS_SIZE']),
+        ])
     print("Quota allocation")
     print(pt)
 
