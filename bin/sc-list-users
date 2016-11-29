@@ -142,7 +142,6 @@ def main(opts):
             raise ProjectNotFound("No project found with name %s" % opts.project)
         role_assignment = kclient.role_assignments.list(project=projects.keys()[0])
     else:
-        projects = {p.id: p for p in kclient.projects.list()}
         if opts.user:
             # Check if user is present
             try:
@@ -152,6 +151,7 @@ def main(opts):
             role_assignment = kclient.role_assignments.list(user=opts.user)
         else:
             role_assignment = kclient.role_assignments.list()
+        projects = {p.id: p for p in kclient.projects.list()}
 
 
     project_mapping = defaultdict(list)
@@ -208,7 +208,7 @@ def print_users(user_mapping, opts, emails):
             if emails:
                 row.append(emails[user])
             rows.append(row)
-        
+
     if opts.format == 'text':
         print_users_text(header, rows)
     elif opts.format == 'csv':
@@ -225,7 +225,7 @@ def print_projects_text(header, rows):
         extra = ''
         if len(row) > 3:
             extra = ' ' + str.join(', ', row[3:])
-        
+
         print "  %s (%s)%s" % (row[1], row[2], extra)
 
 def print_projects_table(header, rows):
