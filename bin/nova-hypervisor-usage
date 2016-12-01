@@ -50,8 +50,8 @@ log = logging.getLogger()
 log.addHandler(logging.StreamHandler())
 
 DEFAULT = {
-    'CEPH_VMS_SIZE': 644 * 2**20 * 0.4,
-    'CEPH_CINDER_SIZE': 644 * 2**20 * 0.6,
+    'CEPH_VMS_SIZE': 1200 * 2**20 * 0.4,
+    'CEPH_CINDER_SIZE': 1200 * 2**20 * 0.6,
 }
 
 def mib_to_str(value):
