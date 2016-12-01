@@ -910,7 +910,8 @@ def create_cinder_report(project, cinder_summary, cinder_detailed):
     table = str(pt)
     if table:
         report.append("Summary of block storage usage for project %s" % project.name)
-        report.append("(Cost of block storage is based on detailed report)")
+        if opts.prices:
+            report.append("(Cost of block storage is based on detailed report)")
         report.append('')
         report.append(str(pt))
     else:
