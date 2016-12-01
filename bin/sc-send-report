@@ -938,7 +938,7 @@ def create_swift_report(project, swift_summary):
     # This is a timeseries of the swift usage.
     # We get the average and the current usage
     current = df.groupby('policy', as_index=False).last()
-    
+
     pt = prettytable.PrettyTable(['Storage Policy', 'objects', 'containers', 'bytes', 'size'])
     pt.align['Storage Policy'] = 'l'
     pt.align['objects'] = 'r'
@@ -987,7 +987,7 @@ def create_swift_report(project, swift_summary):
     }
     return (str.join('\n', report), reportdata)
 
-    
+
 def create_swift_report_old(project, swift_summary):
     if not swift_summary or (swift_summary['objects'] ==  swift_summary['containers'] == 0):
         return ("No SWIFT storage used", {})
@@ -1058,7 +1058,7 @@ def main(opts):
     log.debug("Projects to analyze: %s" , str.join(', ', [p.name for p in projects.values()]))
 
     if 'swift' in services:
-        # Get usage from swift        
+        # Get usage from swift
         swift_summary = get_swift_summary(opts, projects.values() if opts.project else [])
 
     if 'cinder' in services:
@@ -1176,7 +1176,7 @@ def main(opts):
                 if recipient:
                     try:
                         plotfiles = []
-                        for service in ('nova', 'cinder'):
+                        for service in ('nova', 'cinder', 'swift'):
                             if service in report and report[service].get('plot'):
                                 plotfiles.append(report[service].get('plot'))
                         send_mail_to(opts.smtp,
