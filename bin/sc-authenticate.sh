@@ -19,7 +19,12 @@ Options:
 
   -k, --keep  If environment variables 'OS_PROJECT_NAME' or
               'OS_USERNAME' are defined, keep that value
-              and do not prompt for overwriting.
+              and do not prompt for overwriting. (This is the
+              default behavior; use option '--new' to override.)
+
+  -n, --new   Prompt for new values of 'OS_PROJECT_NAME'
+              or 'OS_USERNAME' even if they are already defined
+              in the environment.
 
   -s, --show  Show 'export' commands instead of executing them.
 
@@ -36,6 +41,7 @@ EOF
 
 ## defaults
 
+keep='yes'
 os_project_default='s3it.playground'
 os_username_default="$USER"
 
@@ -94,8 +100,8 @@ is_absolute_path () {
 
 ## parse command-line
 
-short_opts='23hks'
-long_opts='help,keep,show,v2,v3'
+short_opts='23hkns'
+long_opts='help,keep,new,show,v2,v3'
 
 # test which `getopt` version is available:
 # - GNU `getopt` will generate no output and exit with status 4
@@ -122,6 +128,7 @@ fi
 while [ $# -gt 0 ]; do
     case "$1" in
         --keep|-k) keep='yes' ;;
+        --new|-n)  keep='no' ;;
         --show|-s) show='echo' ;;
         --v2|-2)   use_keystone_api_v3='no' ;;
         --v3|-3)   use_keystone_api_v3='yes' ;;
