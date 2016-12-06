@@ -286,7 +286,7 @@ def update_swift_quota(opts, project):
         if not opts.dry_run:
             swiftclient.post_account(url=storage_url,
                                      token=token,
-                                     headers={'x-account-meta-quota-bytes': newvalue})
+                                     headers={'x-account-meta-quota-bytes': str(newvalue)})
         else:
             print("Updating SWIFT quota %s => %s" % (currquota, newvalue))
         log.info("Updating SWIFT quota %s => %s", currquota, newvalue)
