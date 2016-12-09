@@ -217,7 +217,7 @@ def main(opts):
     nova = nova_client.Client('2', session=sess)
     if opts.cinder:
         cinder = cinder_client.Client('2', session=sess)
-    
+
     #stats = nova.hypervisors_stats.statistics()
     aggregates = nova.aggregates.list()
     hypervisors = nova.hypervisors.list()
@@ -260,13 +260,13 @@ def main(opts):
     flavors = {fl.id:fl for fl in nova.flavors.list(is_public=None)}
     if opts.cinder:
         volumes = cinder.volumes.list(search_opts={'all_tenants': 'true'})
-    
+
     # Collect data on the general availability of vcpus and memory
     enabled_hypervisors = filter(lambda x: x.status == 'enabled', hypervisors)
 
     avail_cpus = sum(h.vcpus*h.cpu_allocation_ratio for h in enabled_hypervisors)
     used_cpus = sum(h.vcpus_used for h in hypervisors)
-    
+
     data['summary'] = OrderedDict([
         ('hypervisors', len(hypervisors)),
         ('hypervisors enabled', len(enabled_hypervisors)),
@@ -302,7 +302,7 @@ def main(opts):
     for flavor in flavors.values():
         flavor = ProxyFlavor(flavor)
         log.debug("Computing capability for flavor %s" % flavor.name)
-        maxf, availf, availf_enabled = compute_capability(flavor, enabled_hypervisors)
+        maxf, availf, availf_enabled = compute_capability(flavor, hypervisors)
         data['flavors'].append(
             {'name': flavor.name,
              'visibility': 'public' if flavor.is_public else 'private',
