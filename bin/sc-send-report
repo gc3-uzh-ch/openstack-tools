@@ -324,6 +324,7 @@ def setup():
     parser.add_argument('--yesterday', action='store_true', help='Get reports from yesterda')
     parser.add_argument('-p', '--parallel', default=4, type=int)
     parser.add_argument('--datadir', default='/tmp/sc-send-report', help='Directory where csv data')
+    parser.add_argument('--report-mysql-string', help='MySQL string to save reports into a MySQL database')
     parser.add_argument('--services', default="nova,swift,cinder", help='Comma separated list of services we want to check')
     parser.add_argument('project',
                         nargs='*',
@@ -1050,7 +1051,7 @@ def main(opts):
     services = [i for i in ['nova', 'cinder', 'swift'] if i in opts.services.split(',')]
 
     # Get the projects
-    all_projects = keystone.projects.list()
+    all_projects = keystone.projects.list(enabled=True)
     if opts.project:
         projects = {p.id: p for p in all_projects  if p.name in opts.project or p.id in opts.project}
     else:
