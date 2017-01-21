@@ -140,7 +140,7 @@ def main(opts):
         projects = {p.id: p for p in kclient.projects.list(name=opts.project)}
         if not projects:
             raise ProjectNotFound("No project found with name %s" % opts.project)
-        role_assignment = kclient.role_assignments.list(project=projects.keys()[0])
+        role_assignment = kclient.role_assignments.list(project=list(projects.keys())[0])
     else:
         if opts.user:
             # Check if user is present
@@ -184,7 +184,7 @@ def print_projects(project_mapping, opts, emails):
     if emails:
         header.append('User email')
     for project, role in sorted(project_mapping.items()):
-        for user in sorted(role):
+        for user in sorted(role, key=lambda x: x['user']):
             row = [project, user['user'], user['role']]
             if emails:
                 row.append(emails[user['user']])
@@ -221,12 +221,12 @@ def print_projects_text(header, rows):
     for row in rows:
         if project != row[0]:
             project = row[0]
-            print project
+            print(project)
         extra = ''
         if len(row) > 3:
             extra = ' ' + str.join(', ', row[3:])
 
-        print "  %s (%s)%s" % (row[1], row[2], extra)
+        print("  %s (%s)%s" % (row[1], row[2], extra))
 
 def print_projects_table(header, rows):
     pt = prettytable.PrettyTable(header)
@@ -245,7 +245,7 @@ def print_users_text(header, rows):
     for row in rows:
         if user != row[0]:
             user = row[0]
-            print user
+            print(user)
         extra = ''
         if len(row) > 3:
             extra = ' ' + str.join(', ', row[3:])
