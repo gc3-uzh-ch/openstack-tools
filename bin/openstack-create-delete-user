@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-# 
-# @(#)openstack-create-user.py
-# 
-# 
+# -*- coding: utf-8 -*-#
+# @(#)openstack-create-delete-user
+#
+#
 # Copyright (C) 2014, GC3, University of Zurich. All rights reserved.
-# 
-# 
+#
+#
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
 # Free Software Foundation; either version 2 of the License, or (at your
@@ -38,17 +38,16 @@ DEFAULT_SECGROUP_RULES = [
 ]
 USERS_MAILING_LIST='https://lists.uzh.ch/gc3.lists.uzh.ch/sympa/review/cloud'
 
-    
+
 class EnvDefault(argparse.Action):
     # This is took from
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
     def __init__(self, envvar, required=True, default=None, **kwargs):
-        if not default and envvar:
-            if envvar in os.environ:
-                default = os.environ[envvar]
+        if envvar in os.environ:
+            default = os.environ[envvar]
         if required and default:
             required = False
-        super(EnvDefault, self).__init__(default=default, required=required, 
+        super(EnvDefault, self).__init__(default=default, required=required,
                                          **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
@@ -148,14 +147,14 @@ def add_user(args):
         else:
             client.roles.add_user_role(user.id, matching_roles[0].id, tenant=args.tenant_id)
             print "Assigned role `%s` to user `%s` in tenant `%s`" % (args.role, user.name, args.project)
-        
+
         if TENANT_HAS_BEEN_CREATED:
             tenant_postinstall(user, new_tenant, client, args)
 
     else:
         if matching_users:
             print "User `%s` exists already with id %s, skipping creation" % (user.name, user.id)
-        else:            
+        else:
             user = client.users.create(args.username, args.password, args.email)
             print "User `%s` created with id: %s" % (user.name, user.id)
             USER_HAS_BEEN_CREATED=True

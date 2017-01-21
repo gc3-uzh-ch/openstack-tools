@@ -77,9 +77,8 @@ class EnvDefault(argparse.Action):
     # This is took from
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
     def __init__(self, envvar, required=True, default=None, **kwargs):
-        if not default and envvar:
-            if envvar in os.environ:
-                default = os.environ[envvar]
+        if envvar in os.environ:
+            default = os.environ[envvar]
         if required and default:
             required = False
         super(EnvDefault, self).__init__(default=default, required=required,
@@ -175,8 +174,8 @@ def maybe_remove_assignment(session, users, assignment, dry_run=True):
                     log.info("Correctly removed role %s from user %s in project %s", roleid, user, projectid)
                 except Exception as ex:
                     log.error("Error while removing role %s from user %s in project %s: %s", roleid, user, projectid, ex)
-                                          
-    
+
+
 def main(opts):
     """
     * find users that have been deleted from ldap.

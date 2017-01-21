@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 mode: python -*-#
-# @(#)openstack-update-quotas
+# @(#)openstack-check-quotas
 #
 #
 # Copyright (C) 2013, GC3, University of Zurich. All rights reserved.
@@ -51,12 +51,11 @@ class EnvDefault(argparse.Action):
     # Courtesy of Russell Heilling from Stack Overflow:
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
     def __init__(self, envvar, required=False, default=None, **kwargs):
-        if not default and envvar:
-            if envvar in os.environ:
-                default = os.environ[envvar]
+        if envvar in os.environ:
+            default = os.environ[envvar]
         if required and default:
             required = False
-        super(EnvDefault, self).__init__(default=default, required=required, 
+        super(EnvDefault, self).__init__(default=default, required=required,
                                          **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
@@ -108,7 +107,7 @@ def configure_project_translator(opts):
                                 auth_url=opts.os_auth_url)
         @memoize
         def keystone_project_translator(user_id):
-            project = client.tenants.get(user_id)            
+            project = client.tenants.get(user_id)
             return project.name
         return keystone_project_translator
 
@@ -222,7 +221,7 @@ def check_cinder_quotas(sql_string, ptranslator, log=[], update=False):
             else:
                 log.append("Skipping resource `%s` which is not (yet) supported." % quota.resource)
 
-        
+
 
 def read_option_from_config(cfgfile, section, option):
     """Read configuration file cfgfile, and returns configuration option
@@ -259,7 +258,7 @@ def main(args):
                 "not a file or it does not contain option DEFAULT/sql_connection.\n\n" % cfgfile)
             parser.print_help()
             sys.exit(1)
-    
+
     if not args.cinder_sql_string:
         args.cinder_sql_string = read_option_from_config(args.cinder_config_file, 'DEFAULT', 'sql_connection')
         if args.cinder_sql_string is None:

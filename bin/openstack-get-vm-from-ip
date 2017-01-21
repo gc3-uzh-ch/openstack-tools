@@ -77,7 +77,7 @@ def mkdate(string):
         except ValueError:
             pass
     raise argparse.ArgumentError(
-        "Invalid argument '%s' for time format. Accepted formats are: %s", 
+        "Invalid argument '%s' for time format. Accepted formats are: %s",
         string, str.join(',', valid_date_format))
 
 
@@ -86,12 +86,11 @@ class EnvDefault(argparse.Action):
     # Courtesy of Russell Heilling from Stack Overflow:
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
     def __init__(self, envvar, required=False, default=None, **kwargs):
-        if not default and envvar:
-            if envvar in os.environ:
-                default = os.environ[envvar]
+        if envvar in os.environ:
+            default = os.environ[envvar]
         if required and default:
             required = False
-        super(EnvDefault, self).__init__(default=default, required=required, 
+        super(EnvDefault, self).__init__(default=default, required=required,
                                          **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
@@ -146,7 +145,7 @@ def configure_user_translator(opts):
                                 auth_url=opts.os_auth_url)
         @memoize
         def keystone_user_translator(user_id):
-            user = client.users.get(user_id)            
+            user = client.users.get(user_id)
             return user.name
         return keystone_user_translator
 
@@ -169,7 +168,7 @@ def configure_project_translator(opts):
                                 auth_url=opts.os_auth_url)
         @memoize
         def keystone_project_translator(user_id):
-            project = client.tenants.get(user_id)            
+            project = client.tenants.get(user_id)
             return project.name
         return keystone_project_translator
 
@@ -235,7 +234,7 @@ if __name__ == "__main__":
     parser.add_argument(metavar='start-date', dest='start_date', nargs='?', type=mkdate,
                         help='Select instances terminated after `start-date`. Valid formats '
                         'for start-date: %s' % str.join(', ', valid_date_format).replace('%','%%'))
-    parser.add_argument(metavar='end-date', dest='end_date', nargs='?', type=mkdate, 
+    parser.add_argument(metavar='end-date', dest='end_date', nargs='?', type=mkdate,
                         help='Select instances created before `end-date`. Valid formats '
                         'for end-date: %s' % str.join(', ', valid_date_format).replace('%','%%'))
     args = parser.parse_args()

@@ -110,9 +110,8 @@ class EnvDefault(argparse.Action):
     # This is took from
     # http://stackoverflow.com/questions/10551117/setting-options-from-environment-variables-when-using-argparse
     def __init__(self, envvar, required=True, default=None, **kwargs):
-        if not default and envvar:
-            if envvar in os.environ:
-                default = os.environ[envvar]
+        if envvar in os.environ:
+            default = os.environ[envvar]
         if required and default:
             required = False
         super(EnvDefault, self).__init__(default=default, required=required,
@@ -267,7 +266,7 @@ def setup_default_security_group(opts, sess):
             print("Ignoring error '%s' when adding rule %s to security group"
             "'%s'" % (ex, rule, secgroup.name))
 
-    
+
 def setup_default_swift_quota(opts):
     print("Setting up default swift quota")
     sess = make_session(opts)
@@ -301,13 +300,13 @@ def setup_neutron_quota(opts, sess, project):
     client = neutron_client.Client(session=sess)
     print("Updating neutron quota to: %s" % DEFAULT_QUOTA['neutron'])
     client.update_quota(project.id, {'quota': DEFAULT_QUOTA['neutron']})
-        
+
 def setup_default_quota(opts, sess, project):
     print("Setting up default quota for project %s." % opts.name)
     setup_neutron_quota(opts, sess, project)
 
     setup_default_swift_quota(opts)
-    
+
 
 # From https://gist.github.com/blinks/47987
 def verify_email_address(addr, mail_from, skip_delivery_check=False):
