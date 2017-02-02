@@ -67,7 +67,7 @@ ask () {
             reply="$default"
         fi
     done
-    printf "$reply"
+    printf '%s' "$reply"
 }
 
 die () {
