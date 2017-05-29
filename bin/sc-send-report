@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: ISO-8859-1 -*-#
+# -*- coding: utf-8 -*-
 #
 #
 # Copyright (C) 2015, S3IT, University of Zurich. All rights reserved.
@@ -698,7 +698,7 @@ def create_nova_report(project, nova_summary, instances, opts):
 
     for uuid, instance in instances.items():
         instance_name = unicode(instance['name'], errors='ignore')
-	cpuhours = instance['hours']
+        cpuhours = instance['hours']
         row = [uuid,
                instance_name,
                instance['flavor'],
