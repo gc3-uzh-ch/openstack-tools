@@ -120,7 +120,11 @@ def setup(argv=sys.argv[1:]):
 
     parser.add_argument('-v', '--verbose', action='count', default=0,
                         help='Increase verbosity')
-    parser.add_argument('-k', '--kill', help='Kill spurious virtual machines', default=False, action="store_true")
+    parser.add_argument('-k', '--kill', help='Kill spurious virtual machines',
+                        default=False, action="store_true")
+    parser.add_argument('-p', '--process-pool-size',
+                        help='Run this many SSH processes in parallel',
+                        type=int, default=15)
     parser.add_argument('sshopts', nargs='*', help="ssh options.")
     opts = parser.parse_args(argv)
 
@@ -230,8 +234,8 @@ def main(opts):
     ))
 
     log.debug("Spawning %d jobs: %s", len(compute_nodes), str.join(', ', compute_nodes))
-    p = mp.Pool(15)  # FIXME: hard-coded!
-    output_to_process = p.map(RunVirsh(opts.sshopts), compute_nodes)
+    pool = mp.Pool(opts.process_pool_size)
+    output_to_process = pool.map(RunVirsh(opts.sshopts), compute_nodes)
     log.info("All jobs ended (more or less)")
 
     vms_on_host = {}
