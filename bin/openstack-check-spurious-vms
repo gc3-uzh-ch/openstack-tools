@@ -130,22 +130,22 @@ def setup(argv=sys.argv[1:]):
     return opts
 
 
-class RunVirsh(mp.Process):
-    def __init__(self, host, sshopts, queue):
-        cmd = ['ssh'] + sshopts + [host, 'virsh', 'list', '--all']
-        mp.Process.__init__(self, args=cmd)
-        self.host = host
-        self.queue = queue
-
-    def run(self):
-        cmd = str.join(' ', self._args)
-        log.debug("Executing command `%s`" % cmd)
-        pipe = subprocess.Popen(self._args, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
+# this must be a function object, not a plain function since lambdas are not
+# pickle-able in Python 2; see: https://stackoverflow.com/a/4827520/459543
+class RunVirsh(object):
+    def __init__(self, ssh_opts=[]):
+        self.ssh = ['ssh'] + ssh_opts
+        log.debug("RunVirsh: using SSH command `%s`", ' '.join(self.ssh))
+    def __call__(self, host):
+        log.info("Gathering VM list from host `%s` ...", host)
+        cmd = self.ssh + [host, 'virsh', 'list', '--all']
+        cmd_str = ' '.join(cmd)
+        log.debug("RunVirsh: Executing command `%s` ...", cmd_str)
+        pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = pipe.communicate()
-        ret = pipe.returncode
-        log.debug("Command %s exited with status %d and output '%s'" % (cmd, ret, stdout))
-        self.queue.put((ret, self.host, stdout, stderr))
+        rc = pipe.returncode
+        log.debug("Command `%s` exited with status %d and output `%s`", cmd_str, rc, stdout)
+        return (rc, host, stdout, stderr)
 
 
 def parse_virsh_output(output):
@@ -224,36 +224,19 @@ def main(opts):
         instances_by_host[host].append(vm)
 
     # Get all compute nodes.
-    compute_nodes = [i for i in client.services.list() if i.binary == 'nova-compute']
-    vms_on_host = {}
-    queue = mp.Queue()
-    jobs = []
-    log.debug("Spanwing %d jobs: %s", len(compute_nodes), str.join(', ', sorted([i.host for i in compute_nodes])))
-    idx = 0
+    compute_nodes = list(sorted(
+        srv.host for srv in client.services.list()
+        if srv.binary == 'nova-compute'
+    ))
 
-    for node in sorted(compute_nodes, key=lambda x: x.host):
-        host = node.host
-        job = RunVirsh(host, opts.sshopts, queue)
-        jobs.append(job)
-        job.start()
-        # FIXME: this is not the right way: we should use a pool of
-        # processes to avoid spawning too many processes.
-        idx += 1
-        if idx % 15 == 0:
-            time.sleep(5)
-
-
-    log.info("Waiting 20s until all the jobs are done")
-    time.sleep(20)
-    for job in jobs:
-        log.debug("Waiting for job %s to join (host %s)", job.name, job.host)
-        job.join(timeout=1)
-        log.debug("Job %s joined" % job.name)
-        job.terminate()
-
+    log.debug("Spawning %d jobs: %s", len(compute_nodes), str.join(', ', compute_nodes))
+    p = mp.Pool(15)  # FIXME: hard-coded!
+    output_to_process = p.map(RunVirsh(opts.sshopts), compute_nodes)
     log.info("All jobs ended (more or less)")
-    while not queue.empty():
-        (ret, host, stdout, stderr) = queue.get()
+
+    vms_on_host = {}
+    while output_to_process:
+        (ret, host, stdout, stderr) = output_to_process.pop()
 
         if ret != 0:
             log.error("Error `%d` on host %s: %s" % (ret,
