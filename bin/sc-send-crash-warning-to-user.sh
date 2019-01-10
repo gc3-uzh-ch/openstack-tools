@@ -17,10 +17,15 @@
 #
 set -e
 
-SC_ADMIN_KEYSTONE=/etc/creds/keystoneadmin #to be checked
-
 USAGE="$0 HYPERVISOR|VM_ID REASON SENDER_EMAIL SENDER_NAME"
     
+# check if a openstack username is set...
+[ -z "$OS_USERNAME" ] && {
+    echo "Error: No openstack username set."
+    echo "Did you load your OpenStack credentials??"
+    exit 42
+}
+
 [ 4 -ne $# ] && {
     echo "Error: Exactly 4 args are required" >&2
     echo $USAGE
@@ -45,6 +50,7 @@ fi
 REASON="an unknown reason"
 [ -z "$2" ] || REASON="$2"
 
+#sender argument is here in case you need to override the sender field of the message.
 #check if arg 3 is a valid sender..
 [[ "$3" =~ ^[a-z0-9.]+@.*uzh\.ch$ ]] || {
     echo "Error: Invalid sender email: '$3'" >&2
@@ -61,9 +67,10 @@ SENDER_EMAIL="$3"
 
 SENDER_NAME="$4"
 
-#sendmail or mail or mutt??!!
-# I'd use mail.
-MAIL_CMD="mail -s 'Science Cloud instance shut off' -
+#sendmail or mail or mutt or ??!!
+# I'd use sendmail...
+# You could override this passing your mail command as an environment variable. Must support recipient as argument.
+[ -z "$MAIL_CMD" ] && MAIL_CMD="sendmail -f $3"
 
 echo -n "Using "
 [ -z $HYPERVISOR ] || echo Hypervisor hostname 
@@ -86,16 +93,19 @@ for vm_id in $vm_id_list; do
     os_project_id=
     vm_instance_name=$(echo "$os_server_show_out" | grep -A 1 key_name | tail -n1 | tr -d '|' | sed 's/name //' | tr -d '[:blank:]')
     os_user_email=$(openstack user show $os_user_id | grep email | tr -d '|' | tr -d '[:blank:]' | sed 's/^email//')
-    echo $vm_id
-    echo $vm_instance_name
-    echo $os_user_email
+    #echo $vm_id
+    #echo $vm_instance_name
+    #echo $os_user_email
     if [ -z "$vm_instance_name" ] || [ -z "$os_user_email" ]; then   
         echo "WARNING: Could not retrieve name or user email for '$vm_id'!"
         echo "\t You will need to do it manually..."
     fi
 
-    echo   
-    cat <<Endofmessage
+    echo "Sending mail about '$vm_id' to '$os_user_email'"
+    message=$(cat <<Endofmessage
+To: $os_user_email
+Subject: Science Cloud instance shut off
+
 Dear Sciencecloud user,
 this is a notification that your VM "$vm_instance_name" with UUID "$vm_id" has crashed due to $REASON and it is currently shutoff.
 
@@ -115,5 +125,9 @@ University of Zurich
 Winterthurerstrasse 190, CH-8057 Zurich (Switzerland)
 Tel: +41 44 635 42 22
 Endofmessage
+    )
+    
+    echo "$message" | $MAIL_CMD $os_user_email
+
 done
 
