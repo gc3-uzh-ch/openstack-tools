@@ -70,7 +70,7 @@ SENDER_NAME="$4"
 #sendmail or mail or mutt or ??!!
 # I'd use sendmail...
 # You could override this passing your mail command as an environment variable. Must support recipient as argument.
-[ -z "$MAIL_CMD" ] && MAIL_CMD="sendmail -f $3"
+[ -z "$MAIL_CMD" ] && MAIL_CMD="sendmail"
 
 echo -n "Using "
 [ -z $HYPERVISOR ] || echo Hypervisor hostname 
@@ -103,20 +103,23 @@ for vm_id in $vm_id_list; do
 
     echo "Sending mail about '$vm_id' to '$os_user_email'"
     message=$(cat <<Endofmessage
+From: "$SENDER_NAME" <$SENDER_EMAIL>
+Reply-To: help@s3it.uzh.ch
 To: $os_user_email
-Subject: Science Cloud instance shut off
+Subject: Science Cloud instance "$vm_instance_name" was rebooted
 
 Dear Sciencecloud user,
-this is a notification that your VM "$vm_instance_name" with UUID "$vm_id" has crashed due to $REASON and it is currently shutoff.
+this is a notification that your VM "$vm_instance_name" with UUID "$vm_id" has been rebooted due to $REASON.
 
-It can be restarted at any time.
+Please check that all the services are working as expected, and that any attached volume is mounted correctly.
 
-Apologies for any inconvenience this may cause you.
+Apologies for any inconvenience this may have caused you.
 
-If you have further question please write to help@s3it.uzh.ch
+If you have questions or need further support please write to help@s3it.uzh.ch
         
 Best regards,
-        
+
+--
 On behalf of the S3IT sysadmin,
 $SENDER_NAME
 S3IT Services and Support for Science IT
@@ -126,8 +129,8 @@ Winterthurerstrasse 190, CH-8057 Zurich (Switzerland)
 Tel: +41 44 635 42 22
 Endofmessage
     )
-    
     echo "$message" | $MAIL_CMD $os_user_email
+    echo "$message"; echo $MAIL_CMD $os_user_email
 
 done
 
