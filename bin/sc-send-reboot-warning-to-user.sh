@@ -134,7 +134,7 @@ Tel: +41 44 635 42 22
 Endofmessage
     )
     [ $DRY_RUN ] || { echo "$message" | $MAIL_CMD $os_user_email; echo "Message sent! (retcode $?)"; }
-    [ $DRY_RUN ] && echo; echo "-----> DRY RUN - NO MAIL SENT!!!!"; echo
+    [ $DRY_RUN = "true" ] && echo; echo "-----> DRY RUN - NO MAIL SENT!!!!"; echo
     echo "$message"; echo $MAIL_CMD $os_user_email
 
 done
