@@ -17,7 +17,7 @@
 #
 set -e
 
-USAGE="$0 HYPERVISOR|VM_ID REASON SENDER_EMAIL SENDER_NAME"
+USAGE="$0 HYPERVISOR|VM_ID REASON SENDER_EMAIL SENDER_NAME [--dry-run]"
     
 # check if a openstack username is set...
 [ -z "$OS_USERNAME" ] && {
@@ -27,9 +27,13 @@ USAGE="$0 HYPERVISOR|VM_ID REASON SENDER_EMAIL SENDER_NAME"
 }
 
 [ 4 -ne $# ] && {
-    echo "Error: Exactly 4 args are required" >&2
-    echo $USAGE
-    exit 1
+    if [ 5 -eq $# ] && [ "--dry-run" = "$5" ]; then
+        DRY_RUN=true;
+    else
+        echo "Syntax Error: Wrong arguments" >&2
+        echo $USAGE
+        exit 1
+    fi
 }
 
 ARG1=$(echo $1 | tr '[:upper:]' '[:lower:]')
@@ -111,7 +115,7 @@ Subject: Science Cloud instance "$vm_instance_name" was rebooted
 Dear Sciencecloud user,
 this is a notification that your VM "$vm_instance_name" with UUID "$vm_id" has been rebooted due to $REASON.
 
-Please check that all the services are working as expected, and that any attached volume is mounted correctly.
+Please check that all the services are working as expected, and that any eventually attached volume is mounted correctly.
 
 Apologies for any inconvenience this may have caused you.
 
@@ -129,7 +133,8 @@ Winterthurerstrasse 190, CH-8057 Zurich (Switzerland)
 Tel: +41 44 635 42 22
 Endofmessage
     )
-    echo "$message" | $MAIL_CMD $os_user_email
+    [ $DRY_RUN ] || { echo "$message" | $MAIL_CMD $os_user_email; echo "Message sent! (retcode $?)"; }
+    [ $DRY_RUN ] && echo; echo "-----> DRY RUN - NO MAIL SENT!!!!"; echo
     echo "$message"; echo $MAIL_CMD $os_user_email
 
 done
