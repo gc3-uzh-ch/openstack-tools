@@ -99,22 +99,26 @@ for vm_id in $vm_id_list; do
     os_server_show_out=$(openstack server show $vm_id)
     echo "$os_server_show_out"
     os_user_id=$(echo "$os_server_show_out" | grep user_id | tr -d '|' | sed 's/user_id //g')
-    os_project_id=
+    os_project_id=$(echo "$os_server_show_out" | grep project_id | tr -d '|' | sed 's/project_id //g')
     vm_instance_name=$(echo "$os_server_show_out" | grep -A 1 key_name | tail -n1 | tr -d '|' | sed 's/name //' | tr -d '[:blank:]')
     os_user_email=$(openstack user show $os_user_id | grep email | tr -d '|' | tr -d '[:blank:]' | sed 's/^email//')
+    os_project_contact=$(openstack project show $os_project_id | grep contact_email | tr -d '|' | tr -d '[:blank:]' | sed 's/^contact_email//') 
     #echo $vm_id
     #echo $vm_instance_name
     #echo $os_user_email
+    #echo $os_project_id
+    #echo $os_project_contact
     if [ -z "$vm_instance_name" ] || [ -z "$os_user_email" ]; then   
         echo "WARNING: Could not retrieve name or user email for '$vm_id'!"
         echo "\t You will need to do it manually..."
     fi
 
-    echo "Sending mail about '$vm_id' to '$os_user_email'"
+    echo "Sending mail about '$vm_id' to '$os_user_email' and '$os_project_contact' in 'CC'"
     message=$(cat <<Endofmessage
 From: "$SENDER_NAME" <$SENDER_EMAIL>
 Reply-To: help@s3it.uzh.ch
 To: $os_user_email
+CC: $os_project_contact
 Subject: Science Cloud instance "$vm_instance_name" was rebooted
 
 Dear Sciencecloud user,
