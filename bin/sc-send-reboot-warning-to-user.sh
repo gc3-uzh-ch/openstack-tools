@@ -27,7 +27,12 @@ USAGE="$0 HYPERVISOR|VM_ID REASON SENDER_EMAIL SENDER_NAME [--dry-run]"
 }
 
 [ 4 -ne $# ] && {
-    if [ 5 -eq $# ] && [ "--dry-run" = "$5" ]; then
+    if [ 5 -eq $# ]; then
+        [ "--dry-run" = "$5" ] || { 
+            echo "Syntax Error: Wrong argument number 5" >&2
+            echo $USAGE
+            exit 1
+        }
         DRY_RUN=true;
     else
         echo "Syntax Error: Wrong arguments" >&2
@@ -133,9 +138,22 @@ Winterthurerstrasse 190, CH-8057 Zurich (Switzerland)
 Tel: +41 44 635 42 22
 Endofmessage
     )
-    [ $DRY_RUN ] || { echo "$message" | $MAIL_CMD $os_user_email; echo "Message sent! (retcode $?)"; }
-    [ $DRY_RUN = "true" ] && echo; echo "-----> DRY RUN - NO MAIL SENT!!!!"; echo
-    echo "$message"; echo $MAIL_CMD $os_user_email
+    echo
+    echo "$message"
+    echo
+    echo "Sending it with \"$MAIL_CMD $os_user_email\""
+
+    if [ "$DRY_RUN" = "true" ]; then
+        echo
+        echo "-----> THIS IS A DRY RUN - NO MAIL WAS SENT!!!!"
+        echo
+    else
+        #send message
+        echo "$message" | $MAIL_CMD $os_user_email
+        echo
+        echo "-----> The message was sent! (retcode $?)"
+        echo
+    fi
 
 done
 
