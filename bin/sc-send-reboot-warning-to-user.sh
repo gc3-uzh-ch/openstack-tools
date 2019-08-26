@@ -133,7 +133,7 @@ If you have questions or need further support please write to help@s3it.uzh.ch
 Best regards,
 
 --
-On behalf of the S3IT sysadmin,
+On behalf of the S3IT SysAdmin Team,
 $SENDER_NAME
 S3IT Services and Support for Science IT
 Office Y11 F 52
