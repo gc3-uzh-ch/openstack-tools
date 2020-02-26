@@ -1,20 +1,20 @@
 #!/bin/bash
-# 
-#-accept as input 3 arguments: an hypervisor _or_ a vm ID, a REASON and a sender ("name surname").
-#-extract the user_id mail address
-#-prepare an email to be sent via sendmail to the user _and_ sysadmin@s3it.lists.uzh.ch with sysadmin as sender
-#-the text should be something on the line:
-#   "Dear Sciencecloud user,
-#    this is a notification that your VM {name} with UUID {UUID} has crashed due to {REASON} and it is currently shutoff.
-#    It can be restarted at any time.
-#    Apologies for any inconvenience this may cause you.
-#    If you have further question please write to help@s3it.uzh.ch
-#    Best regards,
-#    On behalf of the S3IT sysadmin,
-#   {sender}
+# sc-send-reboot-warning-to-user.sh
 #
-#-should warn about VMs started from a member of s3it and not belonging to our projects
+# finds out who has started an instance (or all instances allocated on an hypervisor), as well as the tech contact for the
+# VM's project and sends them an email via sendmail (or $MAIL_CMD) on behalf of the Name/email specified in the command line.
 #
+# Requires: shell with admin OS credentials loaded and nova / openstack python clients installed.
+# Currently requires also a configured mail client supporting recipient as argument and mail headers on mail text.
+# It uses sendmail by default, but you can override it passing your mail command as the $MAIL_CMD environment variable. 
+# Also the mail message can be overridden passing $MESSAGE environment variable, that must contain headers+text mail message.
+#
+# - 2do: choose sending mail client
+# - 2do: should warn about VMs started from a member of s3it and not belonging to our projects
+# - 2do: choose mail text
+# - 2do: aggregate VM ids and names so that only 1 mail is sent even for multiple vms (.. maybe) 
+#
+
 set -e
 
 USAGE="$0 HYPERVISOR|VM_ID REASON SENDER_EMAIL SENDER_NAME [--dry-run]"
@@ -119,9 +119,9 @@ From: "$SENDER_NAME" <$SENDER_EMAIL>
 Reply-To: help@s3it.uzh.ch
 To: $os_user_email
 CC: $os_project_contact
-Subject: Science Cloud instance "$vm_instance_name" was rebooted
+Subject: ScienceCloud instance "$vm_instance_name" was rebooted
 
-Dear Sciencecloud user,
+Dear ScienceCloud user,
 this is a notification that your VM "$vm_instance_name" with UUID "$vm_id" has been rebooted due to $REASON.
 
 Please check that all the services are working as expected, and that any eventually attached volume is mounted correctly.
