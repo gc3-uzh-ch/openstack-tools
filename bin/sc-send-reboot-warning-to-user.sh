@@ -104,7 +104,7 @@ for vm_id in $vm_id_list; do
     vm_instance_name=$(echo "$os_server_show_out" | grep -A 1 key_name | tail -n1 | tr -d '|' | sed 's/name //' | tr -d '[:blank:]')
     os_user_email=$(openstack user show $os_user_id | grep email | tr -d '|' | tr -d '[:blank:]' | sed 's/^email//')
     os_project_contact=$(openstack project show $os_project_id | grep contact_email | tr -d '|' | tr -d '[:blank:]' | sed 's/^contact_email//') 
-    [ "$DEBUG" = "TRUE"] && {
+    [ "$DEBUG" = "TRUE" ] && {
         echo $vm_id
         echo $vm_instance_name
         echo $os_user_email
