@@ -122,24 +122,21 @@ CC: $os_project_contact
 Subject: ScienceCloud instance "$vm_instance_name" was rebooted
 
 Dear ScienceCloud user,
-this is a notification that your VM "$vm_instance_name" with UUID "$vm_id" has been rebooted due to $REASON.
+this is a notification that your instance "$vm_instance_name" with UUID "$vm_id" has been rebooted due to $REASON.
 
-Please check that all the services are working as expected, and that any eventually attached volume is mounted correctly.
+Please check that all the services are working as expected, and that any attached volumes are mounted correctly.
 
 Apologies for any inconvenience this may have caused you.
 
 If you have questions or need further support please write to help@s3it.uzh.ch
-        
+
 Best regards,
 
 --
-On behalf of the S3IT SysAdmin Team,
+On behalf of S3IT,
 $SENDER_NAME
-S3IT Services and Support for Science IT
-Office Y11 F 52
+Service and Support for Science IT (S3IT)
 University of Zurich
-Winterthurerstrasse 190, CH-8057 Zurich (Switzerland)
-Tel: +41 44 635 42 22
 Endofmessage
     )
     echo
