@@ -109,8 +109,9 @@ for vm_id in $vm_id_list; do
     #echo $os_project_id
     #echo $os_project_contact
     if [ -z "$vm_instance_name" ] || [ -z "$os_user_email" ]; then   
-        echo "WARNING: Could not retrieve name or user email for '$vm_id'!"
-        echo "\t You will need to do it manually..."
+        echo "WARNING: Could not retrieve name or user email for '$vm_id' in project '$os_project_id'!"
+        echo "\tSkipping: you will need to do it manually..."
+        continue
     fi
 
     echo "Sending mail about '$vm_id' to '$os_user_email' and '$os_project_contact' in 'CC'"
