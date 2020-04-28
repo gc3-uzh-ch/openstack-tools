@@ -3,8 +3,9 @@
 #
 # finds out who has started an instance (or all instances allocated on an hypervisor), as well as the tech contact for the
 # VM's project and sends them an email via sendmail (or $MAIL_CMD) on behalf of the Name/email specified in the command line.
-#
-# Requires: shell with admin OS credentials loaded and nova / openstack python clients installed.
+# It sends one email to each user, with the list of VM that needs to be resized, and one at each tech contact of the affected
+# project, with a list of all the affected vms for each project.
+# Requires: shell with admin OS credentials loaded and nova / openstack python clients installed, BASH 4
 # Currently requires also a configured mail client supporting recipient as argument and mail headers on mail text.
 # It uses sendmail by default, but you can override it passing your mail command as the $MAIL_CMD environment variable. 
 # Also the mail message can be overridden passing $MESSAGE environment variable, that must contain headers+text mail message.
@@ -12,7 +13,7 @@
 # - 2do: choose sending mail client
 # - 2do: should warn about VMs started from a member of s3it and not belonging to our projects
 # - 2do: choose mail text
-# - 2do: aggregate VM ids and names so that only 1 mail is sent even for multiple vms (.. maybe) 
+# 
 #
 
 set -e
