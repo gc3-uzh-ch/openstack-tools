@@ -52,6 +52,8 @@ log.addHandler(logging.StreamHandler())
 DEFAULT = {
     'CEPH_VMS_SIZE': 1200 * 2**20 * 0.4,
     'CEPH_CINDER_SIZE': 1200 * 2**20 * 0.6,
+    'GPU_T4_SLOTS': 4,
+    'GPU_P4_SLOTS': 2,
 }
 
 def mib_to_str(value):
@@ -184,6 +186,8 @@ def filter_by_spec(flavor, hypervisors):
             pass
     return valid_hypervisors
 
+def compute_pci_slots_node_capability(max_vms, curr_vms):
+    return max_vms - curr_vms
 
 def compute_capability(flavor, hypervisors):
     hypervisors = filter_by_spec(flavor, hypervisors)
@@ -192,18 +196,35 @@ def compute_capability(flavor, hypervisors):
     max_count_wo_disabled = 0
 
     for node in hypervisors:
-        vms_by_cpus = int((node.vcpus_max - node.vcpus_used) / flavor.vcpus)
         vms_by_mem = node.memory_mb_free / flavor.ram
-        n_vms = min(
-            vms_by_cpus,
-            vms_by_mem)
-        if n_vms < 0: n_vms = 0
-
-        max_vms_by_cpus = int((node.vcpus_max) / flavor.vcpus)
         max_vms_by_mem = node.memory_mb / flavor.ram
-        n_maxvms = min(
-            max_vms_by_cpus,
-            max_vms_by_mem)
+
+        if 'gpu' in flavor.name:
+            if 'gpuT4' in flavor.name:
+                n_maxvms = min(
+                    DEFAULT['GPU_T4_SLOTS'],
+                    max_vms_by_mem
+                    )
+            elif 'gpuP4' in flavor.name:
+                n_maxvms = min(
+                    DEFAULT['GPU_P4_SLOTS'],
+                    max_vms_by_mem
+                    )
+            #else throw exception
+            n_vms = min(
+                compute_pci_slots_node_capability(n_maxvms, node.running_vms),
+                vms_by_mem
+                )
+        else:
+            vms_by_cpus = int((node.vcpus_max - node.vcpus_used) / flavor.vcpus)
+            n_vms = min(
+                vms_by_cpus,
+                vms_by_mem)
+            max_vms_by_cpus = int((node.vcpus_max) / flavor.vcpus)
+            n_maxvms = min(
+                max_vms_by_cpus,
+                max_vms_by_mem)
+        if n_vms < 0: n_vms = 0
         count += n_vms
         max_count += n_maxvms
         if node.status == 'enabled':
