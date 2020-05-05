@@ -211,8 +211,9 @@ def compute_capability(flavor, hypervisors):
                     max_vms_by_mem
                     )
             #else throw exception
-            n_vms = min(
-                compute_pci_slots_node_capability(n_maxvms, node.running_vms),
+             n_avail_slots = n_maxvms - node.running_vms    
+             n_vms = min(
+                n_avail_slots,
                 vms_by_mem
                 )
         else:
