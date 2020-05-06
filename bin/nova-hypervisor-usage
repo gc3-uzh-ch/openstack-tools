@@ -186,8 +186,6 @@ def filter_by_spec(flavor, hypervisors):
             pass
     return valid_hypervisors
 
-def compute_pci_slots_node_capability(max_vms, curr_vms):
-    return max_vms - curr_vms
 
 def compute_capability(flavor, hypervisors):
     hypervisors = filter_by_spec(flavor, hypervisors)
