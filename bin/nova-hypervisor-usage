@@ -208,7 +208,6 @@ def compute_capability(flavor, hypervisors):
                     DEFAULT['GPU_P4_SLOTS'],
                     max_vms_by_mem
                     )
-            #else throw exception
              n_avail_slots = n_maxvms - node.running_vms    
              n_vms = min(
                 n_avail_slots,
