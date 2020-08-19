@@ -136,7 +136,7 @@ Best regards,
 --
 On behalf of S3IT,
 $SENDER_NAME
-Service and Support for Science IT (S3IT)
+Services and Support for Science IT (S3IT)
 University of Zurich
 Endofmessage
     )
