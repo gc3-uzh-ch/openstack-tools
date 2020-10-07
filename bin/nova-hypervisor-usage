@@ -179,7 +179,7 @@ def filter_by_spec(flavor, hypervisors):
     for node in hypervisors:
         try:
             for key, val in flavor.get_keys().items():
-		if key != 'pci_passthrough:alias' and not any([ag.metadata.get(key) == val for ag in node.aggregates]):
+                if key != 'pci_passthrough:alias' and not any([ag.metadata.get(key) == val for ag in node.aggregates]):
                     raise NotMatching()
             valid_hypervisors.append(node)
         except NotMatching:
