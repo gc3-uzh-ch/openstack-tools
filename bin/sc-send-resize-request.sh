@@ -18,7 +18,7 @@
 
 set -e
 
-USAGE="$0 HYPERVISOR|VM_ID SENDER_EMAIL SENDER_NAME [--dry-run]"
+USAGE="$0 \"HYPERVISOR1|VM_ID1\ HYPERVISOR2|VM_ID2 ...\" SENDER_EMAIL SENDER_NAME [--dry-run]"
 
 [ -z $RESIZE_DUE_DATE ] && RESIZE_DUE_DATE=$(date -d "+ 3 weeks" "+%d of %B %Y") 
 
@@ -47,17 +47,19 @@ USAGE="$0 HYPERVISOR|VM_ID SENDER_EMAIL SENDER_NAME [--dry-run]"
 
 ARG1=$(echo $1 | tr '[:upper:]' '[:lower:]')
 echo $ARG1
-#check if arg 1 is an hypervisor or an UUID
-if [[ $ARG1 =~ ^node-[a-z][0-9][0-9]?-[0-9][0-9](-[0-9][0-9])?$ ]]; then
-    HYPERVISOR=$ARG1
-elif [[ $ARG1 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]]; then
-    VM_ID=$ARG1
+#arg 1 can be multiple items, hypervisor hosts or vm ids.
+for item in $ARG1; do 
+    #check if arg 1 is an hypervisor or an UUID
+    if [[ $item =~ ^node-[a-z][0-9][0-9]?-[0-9][0-9](-[0-9][0-9])?$ ]]; then
+        vm_id_list="$(nova hypervisor-servers $item| egrep -o '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}') $vm_id_list"
+    elif [[ $item =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]]; then
+        vm_id_list="$item $vm_id_list"
 else
     echo "Error: Invalid argument: '$1'" >&2
     echo $USAGE
     exit 2
 fi
-
+[ -z "$vm_id_list" ] && { echo "ERROR: empty vm_id_list!"; exit 5; }
 
 #sender argument is here in case you need to override the sender field of the message.
 #check if arg 3 is a valid sender..
@@ -80,19 +82,6 @@ SENDER_NAME="$3"
 # I'd use sendmail...
 # You could override this passing your mail command as an environment variable. Must support recipient as argument.
 [ -z "$MAIL_CMD" ] && MAIL_CMD="sendmail"
-    
-echo -n "Using "
-[ -z $HYPERVISOR ] || echo Hypervisor hostname 
-[ -z $VM_ID ] || echo VM UUID
-
-
-if [ ! -z $HYPERVISOR ]; then
-    vm_id_list="$(nova hypervisor-servers $HYPERVISOR | egrep -o '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}')"
-else
-    vm_id_list="$VM_ID"
-fi
-
-[ -z "$vm_id_list" ] && { echo "ERROR: empty vm_id_list!"; exit 5; }
     
 declare -A users=()
 declare -A contacts=()
