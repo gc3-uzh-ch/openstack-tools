@@ -20,7 +20,7 @@ set -e
 
 USAGE="$0 \"HYPERVISOR1|VM_ID1\ HYPERVISOR2|VM_ID2 ...\" SENDER_EMAIL SENDER_NAME [--dry-run]"
 
-[ -z $RESIZE_DUE_DATE ] && RESIZE_DUE_DATE=$(date -d "+ 3 weeks" "+%d of %B %Y") 
+[ -z $RESIZE_DUE_DATE ] && RESIZE_DUE_DATE=$(date -d "+ 2 weeks" "+%d of %B %Y")
 
 ##################### ARG CHECK
 # check if a openstack username is set...
@@ -54,11 +54,12 @@ for item in $ARG1; do
         vm_id_list="$(nova hypervisor-servers $item| egrep -o '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}') $vm_id_list"
     elif [[ $item =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]]; then
         vm_id_list="$item $vm_id_list"
-else
-    echo "Error: Invalid argument: '$1'" >&2
-    echo $USAGE
-    exit 2
-fi
+    else
+    	echo "Error: Invalid argument: '$1'" >&2
+    	echo $USAGE
+    	exit 2
+    fi
+done
 [ -z "$vm_id_list" ] && { echo "ERROR: empty vm_id_list!"; exit 5; }
 
 #sender argument is here in case you need to override the sender field of the message.
@@ -104,13 +105,13 @@ Endofmessagehead
     message_tail=$(cat <<Endofmessagetail
 
 "Resizing" your ScienceCloud instance allows you to change its flavor and that is required because the hardware your VM is running on will be soon switched off and decommissioned.
-Since February 2020 new hardware has been added (link to the newsletter message - it should be public) and correspondingly flavors with an "-hpcv3" suffix have been created to replace the old "-hpc" flavors: they should be selected as a destination during the resize process.
+Since February 2020 new hardware has been added and correspondingly flavors with an "-hpcv3" suffix have been created to replace the old "-hpc" flavors: they should be selected as a destination during the resize process.
 It is possible to resize without changing the amount of vCPUs and RAM allocated. For example: it is possible to resize a "4cpu-16ram-hpc" instance to a "4cpu-16ram-hpcv3" one.
 The price for the "-hpcv3" flavors is the same as the corresponding "-hpc" flavors (assuming the number of vCPU and RAM is kept the same).
 
 When the "resize" takes place, the instance will REBOOT itself.
 
-To "resize" an instance you can follow the instructions in the ScienceCloud user documentation (accessible from UZH network or via VPN) at https://s3itwiki.uzh.ch/display/clouddoc/How+to+resize+your+instance
+To "resize" an instance you can follow the instructions in the ScienceCloud user documentation (accessible from UZH network or via VPN) at https://docs.s3it.uzh.ch/how-to_articles/how_to_resize_your_instance/ . 
 
 A brief summary follows:
 - login to the ScienceCloud website and choose the "Instances" page
