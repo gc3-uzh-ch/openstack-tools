@@ -51,7 +51,7 @@ echo $ARG1
 for item in $ARG1; do 
     #check if arg 1 is an hypervisor or an UUID
     if [[ $item =~ ^node-[a-z][0-9][0-9]?-[0-9][0-9](-[0-9][0-9])?$ ]]; then
-        vm_id_list="$(nova hypervisor-servers $item| egrep -o '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}') $vm_id_list"
+        vm_id_list="$(nova hypervisor-servers $item| egrep -o '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}' || true) $vm_id_list"
     elif [[ $item =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]]; then
         vm_id_list="$item $vm_id_list"
     else
